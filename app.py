@@ -91,14 +91,14 @@ def format_dimensions(length: Optional[float], width: Optional[float], height: O
     return f"{' '.join(parts)} in"
 
 
-def format_weight(weight_lb: Optional[int], weight_oz: Optional[int]) -> str:
+def format_weight(weight_lb: Optional[float], weight_oz: Optional[float]) -> str:
     if weight_lb is None and weight_oz is None:
         return ""
     parts = []
     if weight_lb is not None:
-        parts.append(f"{int(weight_lb)} lb")
+        parts.append(f"{format_measure(weight_lb)} lb")
     if weight_oz is not None:
-        parts.append(f"{int(weight_oz)} oz")
+        parts.append(f"{format_measure(weight_oz)} oz")
     return " ".join(parts)
 
 
@@ -484,8 +484,8 @@ class DB:
                     length_in REAL,
                     width_in REAL,
                     height_in REAL,
-                    weight_lb INTEGER,
-                    weight_oz INTEGER,
+                    weight_lb REAL,
+                    weight_oz REAL,
                     price_cents INTEGER NOT NULL DEFAULT 0,
                     cost_cents INTEGER NOT NULL DEFAULT 0,
                     stock_qty INTEGER NOT NULL DEFAULT 0,
@@ -623,11 +623,11 @@ class DB:
                 conn.commit()
 
             if "weight_lb" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN weight_lb INTEGER;")
+                cur.execute("ALTER TABLE books ADD COLUMN weight_lb REAL;")
                 conn.commit()
 
             if "weight_oz" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN weight_oz INTEGER;")
+                cur.execute("ALTER TABLE books ADD COLUMN weight_oz REAL;")
                 conn.commit()
 
             # Seed settings
@@ -2029,8 +2029,8 @@ class App:
                 length_in = parse_optional_float(length_raw, "length")
                 width_in = parse_optional_float(width_raw, "width")
                 height_in = parse_optional_float(height_raw, "height")
-                weight_lb = parse_optional_int(weight_lb_raw, "weight (lb)")
-                weight_oz = parse_optional_int(weight_oz_raw, "weight (oz)")
+                weight_lb = parse_optional_float(weight_lb_raw, "weight (lb)")
+                weight_oz = parse_optional_float(weight_oz_raw, "weight (oz)")
                 if weight_oz is not None and weight_oz >= 16:
                     raise ValueError("Weight (oz) must be between 0 and 15.")
                 price_cents = dollars_to_cents(price_s)
@@ -2298,8 +2298,8 @@ class App:
                 length_val = parse_optional_float(length_raw, "length")
                 width_val = parse_optional_float(width_raw, "width")
                 height_val = parse_optional_float(height_raw, "height")
-                weight_lb_val = parse_optional_int(weight_lb_raw, "weight (lb)")
-                weight_oz_val = parse_optional_int(weight_oz_raw, "weight (oz)")
+                weight_lb_val = parse_optional_float(weight_lb_raw, "weight (lb)")
+                weight_oz_val = parse_optional_float(weight_oz_raw, "weight (oz)")
                 if weight_oz_val is not None and weight_oz_val >= 16:
                     raise ValueError("Weight (oz) must be between 0 and 15.")
                 price2 = dollars_to_cents(price_s)
