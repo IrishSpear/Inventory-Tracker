@@ -12,7 +12,7 @@
               <div class="row g-3 align-items-end">
                 <div class="col-md-6">
                   <label class="form-label" for="scan_input">Scan (barcode or price-only)</label>
-                  <input class="form-control" id="scan_input" name="scan_input" autocomplete="off">
+                  <input class="form-control" id="scan_input" name="scan_input" autocomplete="off" autofocus>
                 </div>
                 <div class="col-md-3">
                   <button class="btn btn-outline-primary w-100" type="button" id="scan_parse_btn">Parse Scan</button>
@@ -211,6 +211,7 @@
           runLookup(scanInput.value.trim());
         }
       });
+      scanInput?.focus();
     })();
   </script>
   {% endif %}
