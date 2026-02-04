@@ -391,6 +391,7 @@ class DB:
                 receipt_no TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL,
                 customer_id INTEGER NOT NULL,
+                platform TEXT NOT NULL DEFAULT 'In-store',
                 subtotal_cents INTEGER NOT NULL,
                 discount_cents INTEGER NOT NULL DEFAULT 0,
                 coupon_code TEXT,
@@ -438,14 +439,14 @@ class DB:
             receipt_no = f"{prefix}{int(sid):06d}"
             cur.execute("""
                 INSERT INTO sales_new(
-                    id, receipt_no, created_at, customer_id,
+                    id, receipt_no, created_at, customer_id, platform,
                     subtotal_cents, discount_cents, coupon_code,
                     tax_rate, tax_cents, total_cents,
                     payment_method, payment_status, note, receipt_text, is_void
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0);
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0);
             """, (
-                int(sid), receipt_no, created_at, int(customer_id),
+                int(sid), receipt_no, created_at, int(customer_id), "In-store",
                 int(subtotal), 0, None,
                 float(tax_rate), int(tax_cents), int(total),
                 "cash", "paid", "", receipt_text
@@ -555,6 +556,7 @@ class DB:
                     receipt_no TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL,
                     customer_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL DEFAULT 'In-store',
                     subtotal_cents INTEGER NOT NULL,
                     discount_cents INTEGER NOT NULL DEFAULT 0,
                     coupon_code TEXT,
@@ -631,6 +633,12 @@ class DB:
 
             if "refund_tax_cents" not in self._columns(conn, "returns"):
                 cur.execute("ALTER TABLE returns ADD COLUMN refund_tax_cents INTEGER NOT NULL DEFAULT 0;")
+                conn.commit()
+
+            if "platform" not in self._columns(conn, "sales"):
+                cur.execute("ALTER TABLE sales ADD COLUMN platform TEXT NOT NULL DEFAULT 'In-store';")
+                conn.commit()
+                cur.execute("UPDATE sales SET platform='In-store' WHERE platform IS NULL OR platform='';")
                 conn.commit()
 
             if "location" not in self._columns(conn, "books"):
@@ -1116,6 +1124,54 @@ class DB:
         new_availability = "pickup_ship" if status_norm == "paid" else "pending"
         self.set_book_availability(book_id, new_availability)
 
+    def delete_platform_sale(self, sale_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM platform_sales WHERE id=?;", (int(sale_id),))
+            conn.commit()
+
+    def finalize_platform_sale(self, sale_id: int) -> Tuple[int, str, str]:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT ps.book_id, ps.platform, ps.final_price_cents, ps.status
+                FROM platform_sales ps
+                WHERE ps.id=?;
+            """, (int(sale_id),))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("platform sale missing")
+            book_id, platform, final_price_cents, status = row
+
+        if str(status).lower() != "paid":
+            raise ValueError("only paid platform sales can be completed")
+
+        platform_sale_id = int(sale_id)
+        platform_name = str(platform).strip() or "Platform"
+        customer_name = f"Platform - {platform_name}"
+        safe_platform = re.sub(r"[^a-z0-9]+", "-", platform_name.strip().lower()).strip("-") or "platform"
+        customer_email = f"platform+{safe_platform}@local"
+        customer_id = self.get_or_create_customer(customer_name, customer_email)
+
+        sale_id, receipt_no, receipt_text = self.create_sale(
+            customer_id=customer_id,
+            cart_items=[{
+                "book_id": int(book_id),
+                "qty": 1,
+                "unit_price_cents": int(final_price_cents),
+            }],
+            tax_rate=0.0,
+            order_discount_cents=0,
+            coupon_code=None,
+            payment_method="other",
+            payment_status="paid",
+            note=f"Platform sale via {platform_name}",
+            platform=platform_name,
+        )
+
+        self.delete_platform_sale(platform_sale_id)
+        self.set_book_availability(int(book_id), "available")
+        return sale_id, receipt_no, receipt_text
+
     def list_platform_sales(
         self,
         statuses: Optional[List[str]] = None,
@@ -1200,6 +1256,24 @@ class DB:
         with self._connect() as conn:
             conn.execute("INSERT INTO customers(name,email,is_active) VALUES(?,?,?);", (name.strip(), email.strip(), int(is_active)))
             conn.commit()
+
+    def _get_or_create_customer(self, conn, name: str, email: str) -> int:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM customers WHERE name=? AND email=?;", (name.strip(), email.strip()))
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+        cur.execute(
+            "INSERT INTO customers(name,email,is_active) VALUES(?,?,1);",
+            (name.strip(), email.strip()),
+        )
+        return int(cur.lastrowid)
+
+    def get_or_create_customer(self, name: str, email: str) -> int:
+        with self._connect() as conn:
+            cid = self._get_or_create_customer(conn, name, email)
+            conn.commit()
+            return cid
 
     def update_customer(self, customer_id: int, name: str, email: str, is_active: int) -> None:
         with self._connect() as conn:
@@ -1341,7 +1415,8 @@ class DB:
         coupon_code: Optional[str],
         payment_method: str,
         payment_status: str,
-        note: str
+        note: str,
+        platform: str = "In-store",
     ) -> Tuple[int, str, str]:
         if not cart_items:
             raise ValueError("cart empty")
@@ -1459,14 +1534,14 @@ class DB:
             # insert sale header
             cur.execute("""
                 INSERT INTO sales(
-                    receipt_no, created_at, customer_id,
+                    receipt_no, created_at, customer_id, platform,
                     subtotal_cents, discount_cents, coupon_code,
                     tax_rate, tax_cents, total_cents,
                     payment_method, payment_status, note, receipt_text, is_void
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0);
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0);
             """, (
-                receipt_no, created_at, int(customer_id),
+                receipt_no, created_at, int(customer_id), platform,
                 int(discounted_subtotal), int(total_order_discount), applied_coupon,
                 float(tax_rate), int(tax_cents), int(total_cents),
                 payment_method, payment_status, note or "", receipt_text
@@ -1504,9 +1579,8 @@ class DB:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
-                SELECT s.id, s.receipt_no, s.created_at, c.name, s.total_cents, s.payment_status, s.is_void
+                SELECT s.id, s.receipt_no, s.created_at, s.platform, s.total_cents, s.payment_status, s.is_void
                 FROM sales s
-                JOIN customers c ON c.id = s.customer_id
                 ORDER BY s.id DESC
                 LIMIT ?;
             """, (int(limit),))
@@ -1797,30 +1871,110 @@ class DB:
             """, (int(limit),))
             return [(a, int(b or 0), int(c or 0), int(d or 0)) for (a, b, c, d) in cur.fetchall()]
 
-    def report_top_customers(self, limit: int = 10):
+    def report_top_platforms(self, limit: int = 10):
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
                 WITH refunds AS (
-                    SELECT s.customer_id AS customer_id,
+                    SELECT s.platform AS platform,
                            SUM(r.refund_cents) AS refund_cents
                     FROM returns r
                     JOIN sales s ON s.id = r.sale_id
                     WHERE s.is_void=0
-                    GROUP BY s.customer_id
+                    GROUP BY s.platform
                 )
-                SELECT c.name,
+                SELECT s.platform,
                        COUNT(*) AS sales,
                        SUM(s.total_cents) - IFNULL(refunds.refund_cents, 0) AS revenue_cents
                 FROM sales s
-                JOIN customers c ON c.id = s.customer_id
-                LEFT JOIN refunds ON refunds.customer_id = s.customer_id
+                LEFT JOIN refunds ON refunds.platform = s.platform
                 WHERE s.is_void=0
-                GROUP BY c.id
+                GROUP BY s.platform
                 ORDER BY revenue_cents DESC
                 LIMIT ?;
             """, (int(limit),))
             return [(a, int(b or 0), int(c or 0)) for (a, b, c) in cur.fetchall()]
+
+    def report_summary(self, days: int = 30) -> Dict[str, Any]:
+        start = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT COUNT(*),
+                       SUM(total_cents),
+                       SUM(tax_cents)
+                FROM sales
+                WHERE is_void=0 AND substr(created_at,1,10) >= ?;
+            """, (start,))
+            sale_count, revenue_cents, tax_cents = cur.fetchone()
+
+            has_refund_tax = "refund_tax_cents" in self._columns(conn, "returns")
+            if has_refund_tax:
+                cur.execute("""
+                    SELECT COUNT(*),
+                           SUM(refund_cents),
+                           SUM(refund_tax_cents)
+                    FROM returns
+                    WHERE substr(created_at,1,10) >= ?;
+                """, (start,))
+                return_count, refund_cents, refund_tax_cents = cur.fetchone()
+            else:
+                cur.execute("""
+                    SELECT COUNT(*),
+                           SUM(refund_cents)
+                    FROM returns
+                    WHERE substr(created_at,1,10) >= ?;
+                """, (start,))
+                return_count, refund_cents = cur.fetchone()
+                refund_tax_cents = 0
+
+            cur.execute("""
+                SELECT SUM((si.unit_price_cents - si.unit_cost_cents) * si.quantity - si.line_discount_cents)
+                FROM sale_items si
+                JOIN sales s ON s.id = si.sale_id
+                WHERE s.is_void=0 AND substr(s.created_at,1,10) >= ?;
+            """, (start,))
+            profit_cents = cur.fetchone()[0] or 0
+
+            cur.execute("""
+                WITH sale_cost AS (
+                    SELECT sale_id, book_id, MAX(unit_cost_cents) AS unit_cost_cents
+                    FROM sale_items
+                    GROUP BY sale_id, book_id
+                )
+                SELECT SUM((ri.unit_price_cents - sc.unit_cost_cents) * ri.quantity)
+                FROM return_items ri
+                JOIN returns r ON r.id = ri.return_id
+                JOIN sale_cost sc ON sc.sale_id = r.sale_id AND sc.book_id = ri.book_id
+                WHERE substr(r.created_at,1,10) >= ?;
+            """, (start,))
+            return_profit_cents = cur.fetchone()[0] or 0
+
+        sale_count = int(sale_count or 0)
+        return_count = int(return_count or 0)
+        revenue_cents = int(revenue_cents or 0)
+        refund_cents = int(refund_cents or 0)
+        tax_cents = int(tax_cents or 0)
+        refund_tax_cents = int(refund_tax_cents or 0)
+        net_revenue = revenue_cents - refund_cents
+        net_tax = tax_cents - refund_tax_cents
+        net_profit = int(profit_cents or 0) - int(return_profit_cents or 0)
+        avg_order = int(net_revenue / sale_count) if sale_count else 0
+        return_rate = (return_count / sale_count) if sale_count else 0.0
+
+        return {
+            "sales_count": sale_count,
+            "returns_count": return_count,
+            "revenue_cents": revenue_cents,
+            "refund_cents": refund_cents,
+            "net_revenue_cents": net_revenue,
+            "tax_cents": tax_cents,
+            "refund_tax_cents": refund_tax_cents,
+            "net_tax_cents": net_tax,
+            "profit_cents": net_profit,
+            "avg_order_cents": avg_order,
+            "return_rate": return_rate,
+        }
 
     def report_by_category(self):
         with self._connect() as conn:
@@ -2050,19 +2204,27 @@ class App:
         customize.pack(fill="x", padx=10, pady=(0, 8))
 
         self.book_column_vars = {
+            "isbn": tk.IntVar(value=1),
+            "author": tk.IntVar(value=1),
+            "category": tk.IntVar(value=1),
             "location": tk.IntVar(value=1),
             "dimensions": tk.IntVar(value=1),
             "weight": tk.IntVar(value=1),
             "cost": tk.IntVar(value=1),
             "condition": tk.IntVar(value=1),
             "availability": tk.IntVar(value=1),
+            "active": tk.IntVar(value=1),
             "facebook": tk.IntVar(value=1),
             "ebay": tk.IntVar(value=1),
         }
         for key, label in [
+            ("isbn", "Barcode"),
+            ("author", "Brand/Details"),
+            ("category", "Category"),
             ("condition", "Condition"),
             ("availability", "Availability"),
-            ("location", "Locations"),
+            ("location", "Location"),
+            ("active", "Active"),
             ("dimensions", "Dimensions"),
             ("weight", "Weight"),
             ("cost", "Cost"),
@@ -2188,21 +2350,21 @@ class App:
         if not hasattr(self, "books_tree"):
             return
         base_cols = [
-            "isbn",
             "title",
-            "author",
-            "category",
             "price",
             "stock",
-            "active",
         ]
         optional_cols = [
+            ("isbn", self.book_column_vars["isbn"]),
+            ("author", self.book_column_vars["author"]),
+            ("category", self.book_column_vars["category"]),
             ("condition", self.book_column_vars["condition"]),
             ("availability", self.book_column_vars["availability"]),
             ("location", self.book_column_vars["location"]),
             ("dimensions", self.book_column_vars["dimensions"]),
             ("weight", self.book_column_vars["weight"]),
             ("cost", self.book_column_vars["cost"]),
+            ("active", self.book_column_vars["active"]),
             ("facebook", self.book_column_vars["facebook"]),
             ("ebay", self.book_column_vars["ebay"]),
         ]
@@ -2889,32 +3051,37 @@ class App:
             return
         q = """
             SELECT
-                IFNULL(isbn,''),
-                title,
-                author,
-                IFNULL(location,''),
-                length_in,
-                width_in,
-                height_in,
-                weight_lb,
-                weight_oz,
-                condition,
-                price_cents,
-                cost_cents,
-                stock_qty,
-                is_active,
-                uploaded_facebook,
-                uploaded_ebay,
-                availability_status
-            FROM books
-            ORDER BY title;
+                b.id,
+                IFNULL(b.isbn,''),
+                b.title,
+                b.author,
+                IFNULL(cat.name,''),
+                IFNULL(b.location,''),
+                b.length_in,
+                b.width_in,
+                b.height_in,
+                b.weight_lb,
+                b.weight_oz,
+                b.condition,
+                b.price_cents,
+                b.cost_cents,
+                b.stock_qty,
+                b.is_active,
+                b.uploaded_facebook,
+                b.uploaded_ebay,
+                b.availability_status
+            FROM books b
+            LEFT JOIN categories cat ON cat.id = b.category_id
+            ORDER BY b.title;
         """
         self.db.export_table_to_csv(
             q,
             [
+                "book_id",
                 "barcode",
                 "item_name",
                 "brand_details",
+                "category",
                 "locations",
                 "length_in",
                 "width_in",
@@ -3357,15 +3524,17 @@ class App:
         if not sel:
             messagebox.showerror("No selection", "Select a pending item.")
             return
-        sale_id = int(sel[0])
+        platform_sale_id = int(sel[0])
         rows = self.db.list_platform_sales()
-        row = next((r for r in rows if r[0] == sale_id), None)
+        row = next((r for r in rows if r[0] == platform_sale_id), None)
         if not row:
             return
         _sid, _created, book_id, _title, _platform, _listed, _final, _status, _note = row
         self.db.set_book_availability(book_id, "available")
+        self.db.delete_platform_sale(platform_sale_id)
         self.refresh_books()
         self.refresh_pending_products()
+        self.refresh_platform_sales()
 
     # ---------------- Pickup/Ship tab ----------------
     def _build_pickup_tab(self):
@@ -3377,6 +3546,7 @@ class App:
         top.pack(fill="x", padx=10, pady=10)
         ttk.Button(top, text="Refresh", command=self.refresh_pickup_ship).pack(side="left")
         ttk.Button(top, text="Mark Selected Available", command=self.mark_pickup_available).pack(side="left", padx=6)
+        ttk.Button(top, text="Done", command=self.mark_pickup_done).pack(side="left", padx=6)
 
         self.pickup_tree = ttk.Treeview(
             tab,
@@ -3413,15 +3583,35 @@ class App:
         if not sel:
             messagebox.showerror("No selection", "Select a pickup/ship item.")
             return
-        sale_id = int(sel[0])
+        platform_sale_id = int(sel[0])
         rows = self.db.list_platform_sales()
-        row = next((r for r in rows if r[0] == sale_id), None)
+        row = next((r for r in rows if r[0] == platform_sale_id), None)
         if not row:
             return
         _sid, _created, book_id, _title, _platform, _listed, _final, _status, _note = row
         self.db.set_book_availability(book_id, "available")
+        self.db.delete_platform_sale(platform_sale_id)
         self.refresh_books()
         self.refresh_pickup_ship()
+        self.refresh_platform_sales()
+
+    def mark_pickup_done(self):
+        sel = self.pickup_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Select a pickup/ship item.")
+            return
+        platform_sale_id = int(sel[0])
+        try:
+            self.db.finalize_platform_sale(platform_sale_id)
+        except Exception as e:
+            messagebox.showerror("Complete failed", str(e))
+            return
+        self.refresh_books()
+        self.refresh_platform_sales()
+        self.refresh_pending_products()
+        self.refresh_pickup_ship()
+        self.refresh_sales()
+        self.refresh_reports()
 
     # ---------------- Sales & Returns tab ----------------
     def _build_sales_tab(self):
@@ -3452,11 +3642,11 @@ class App:
         right.pack(side="left", fill="both", expand=True)
 
         ttk.Label(left, text="Sales").pack(anchor="w")
-        self.sales_tree = ttk.Treeview(left, columns=("rno", "ts", "cust", "total", "status", "void"), show="headings", height=18)
+        self.sales_tree = ttk.Treeview(left, columns=("rno", "ts", "platform", "total", "status", "void"), show="headings", height=18)
         for c, l, w, a in [
             ("rno", "Receipt", 100, "w"),
             ("ts", "Date/Time", 160, "w"),
-            ("cust", "Customer", 220, "w"),
+            ("platform", "Platform", 220, "w"),
             ("total", "Total", 100, "e"),
             ("status", "Pay", 80, "center"),
             ("void", "Void", 60, "center"),
@@ -3482,8 +3672,11 @@ class App:
     def refresh_sales(self):
         for i in self.sales_tree.get_children():
             self.sales_tree.delete(i)
-        for sid, rno, ts, cust, total, status, is_void in self.db.list_sales(400):
-            self.sales_tree.insert("", "end", iid=str(sid), values=(rno, ts, cust, cents_to_money(total), status, "yes" if is_void else "no"))
+        for sid, rno, ts, platform, total, status, is_void in self.db.list_sales(400):
+            self.sales_tree.insert(
+                "", "end", iid=str(sid),
+                values=(rno, ts, platform, cents_to_money(total), status, "yes" if is_void else "no"),
+            )
 
         for i in self.returns_tree.get_children():
             self.returns_tree.delete(i)
@@ -3666,6 +3859,30 @@ class App:
         right = ttk.Frame(body)
         right.pack(side="left", fill="both", expand=True)
 
+        summary = ttk.LabelFrame(right, text="Summary (last 30 days)")
+        summary.pack(fill="x", pady=(0, 10))
+        self.report_summary_vars = {
+            "sales": tk.StringVar(value="0"),
+            "returns": tk.StringVar(value="0"),
+            "net_revenue": tk.StringVar(value="$0.00"),
+            "net_profit": tk.StringVar(value="$0.00"),
+            "avg_order": tk.StringVar(value="$0.00"),
+            "return_rate": tk.StringVar(value="0.0%"),
+        }
+        summary_fields = [
+            ("Sales", "sales"),
+            ("Returns", "returns"),
+            ("Net revenue", "net_revenue"),
+            ("Net profit", "net_profit"),
+            ("Avg order", "avg_order"),
+            ("Return rate", "return_rate"),
+        ]
+        for idx, (label, key) in enumerate(summary_fields):
+            row = idx // 2
+            col = (idx % 2) * 2
+            ttk.Label(summary, text=f"{label}:").grid(row=row, column=col, sticky="w", padx=8, pady=2)
+            ttk.Label(summary, textvariable=self.report_summary_vars[key]).grid(row=row, column=col + 1, sticky="w", padx=(0, 8), pady=2)
+
         daily = ttk.LabelFrame(left, text="Daily (last 30 days) — revenue, refunds, net, tax")
         daily.pack(fill="both", expand=True, pady=(0, 10))
         self.daily_tree = ttk.Treeview(daily, columns=("day", "sales", "returns", "rev", "refund", "net", "tax"), show="headings", height=10)
@@ -3708,11 +3925,11 @@ class App:
             self.top_books.column(c, width=w, anchor=a)
         self.top_books.pack(fill="both", expand=True, padx=10, pady=10)
 
-        topcust = ttk.LabelFrame(right, text="Top customers (revenue)")
+        topcust = ttk.LabelFrame(right, text="Top platforms (revenue)")
         topcust.pack(fill="both", expand=True, pady=(0, 10))
         self.top_customers = ttk.Treeview(topcust, columns=("name", "sales", "rev"), show="headings", height=6)
         for c, l, w, a in [
-            ("name", "Customer", 220, "w"),
+            ("name", "Platform", 220, "w"),
             ("sales", "Sales", 60, "center"),
             ("rev", "Revenue", 120, "e"),
         ]:
@@ -3737,6 +3954,14 @@ class App:
             for i in t.get_children():
                 t.delete(i)
 
+        summary = self.db.report_summary(30)
+        self.report_summary_vars["sales"].set(str(summary["sales_count"]))
+        self.report_summary_vars["returns"].set(str(summary["returns_count"]))
+        self.report_summary_vars["net_revenue"].set(cents_to_money(summary["net_revenue_cents"]))
+        self.report_summary_vars["net_profit"].set(cents_to_money(summary["profit_cents"]))
+        self.report_summary_vars["avg_order"].set(cents_to_money(summary["avg_order_cents"]))
+        self.report_summary_vars["return_rate"].set(f"{summary['return_rate'] * 100:.1f}%")
+
         for d, scnt, rcnt, rev, refund, net, tax in self.db.report_daily(30):
             self.daily_tree.insert("", "end", values=(d, scnt, rcnt, cents_to_money(rev), cents_to_money(refund), cents_to_money(net), cents_to_money(tax)))
 
@@ -3746,7 +3971,7 @@ class App:
         for title, units, rev, profit in self.db.report_top_books(10):
             self.top_books.insert("", "end", values=(title, units, cents_to_money(rev), cents_to_money(profit)))
 
-        for name, sales, rev in self.db.report_top_customers(10):
+        for name, sales, rev in self.db.report_top_platforms(10):
             self.top_customers.insert("", "end", values=(name, sales, cents_to_money(rev)))
 
         for cat, rev, profit in self.db.report_by_category():
@@ -3757,13 +3982,13 @@ class App:
         if not path:
             return
         q = """
-            SELECT receipt_no, created_at, customer_id, subtotal_cents, discount_cents, coupon_code, tax_rate, tax_cents,
+            SELECT receipt_no, created_at, customer_id, platform, subtotal_cents, discount_cents, coupon_code, tax_rate, tax_cents,
                    total_cents, payment_method, payment_status, note, is_void
             FROM sales
             ORDER BY id DESC;
         """
         self.db.export_table_to_csv(q,
-            ["receipt_no", "created_at", "customer_id", "subtotal_cents", "discount_cents", "coupon_code", "tax_rate", "tax_cents",
+            ["receipt_no", "created_at", "customer_id", "platform", "subtotal_cents", "discount_cents", "coupon_code", "tax_rate", "tax_cents",
              "total_cents", "payment_method", "payment_status", "note", "is_void"], path)
         messagebox.showinfo("Exported", f"Saved:\n{path}")
 
