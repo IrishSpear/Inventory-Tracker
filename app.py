@@ -487,6 +487,7 @@ class DB:
                 CREATE TABLE IF NOT EXISTS books (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     isbn TEXT UNIQUE,
+                    barcode TEXT UNIQUE,
                     title TEXT NOT NULL,
                     author TEXT NOT NULL,
                     category_id INTEGER,
@@ -500,6 +501,8 @@ class DB:
                     price_cents INTEGER NOT NULL DEFAULT 0,
                     cost_cents INTEGER NOT NULL DEFAULT 0,
                     stock_qty INTEGER NOT NULL DEFAULT 0,
+                    reorder_point INTEGER NOT NULL DEFAULT 0,
+                    reorder_qty INTEGER NOT NULL DEFAULT 0,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     uploaded_facebook INTEGER NOT NULL DEFAULT 0,
                     uploaded_ebay INTEGER NOT NULL DEFAULT 0,
@@ -630,6 +633,20 @@ class DB:
                 );
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS inventory_adjustments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    book_id INTEGER NOT NULL,
+                    delta_qty INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    note TEXT,
+                    user_id INTEGER,
+                    FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+                );
+            """)
+
             conn.commit()
 
             if "refund_tax_cents" not in self._columns(conn, "returns"):
@@ -648,6 +665,10 @@ class DB:
 
             if "location" not in self._columns(conn, "books"):
                 cur.execute("ALTER TABLE books ADD COLUMN location TEXT;")
+                conn.commit()
+
+            if "barcode" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN barcode TEXT;")
                 conn.commit()
 
             if "length_in" not in self._columns(conn, "books"):
@@ -685,6 +706,36 @@ class DB:
             if "availability_status" not in self._columns(conn, "books"):
                 cur.execute("ALTER TABLE books ADD COLUMN availability_status TEXT NOT NULL DEFAULT 'available';")
                 conn.commit()
+
+            if "reorder_point" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN reorder_point INTEGER NOT NULL DEFAULT 0;")
+                conn.commit()
+
+            if "reorder_qty" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN reorder_qty INTEGER NOT NULL DEFAULT 0;")
+                conn.commit()
+
+            if "barcode" in self._columns(conn, "books"):
+                cur.execute("""
+                    UPDATE books
+                    SET barcode = isbn
+                    WHERE barcode IS NULL
+                      AND isbn IS NOT NULL
+                      AND isbn GLOB '[0-9]*'
+                      AND LENGTH(isbn) BETWEEN 8 AND 14;
+                """)
+                conn.commit()
+
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_book_id ON sale_items(book_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_platform_sales_book_id ON platform_sales(book_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_books_category_id ON books(category_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_book_id ON inventory_adjustments(book_id);")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_created_at ON inventory_adjustments(created_at);")
+            conn.commit()
 
             # Seed settings
             defaults = {
@@ -792,6 +843,7 @@ class DB:
         search: str = "",
         in_stock_only: bool = False,
         include_inactive: bool = False,
+        low_stock_only: bool = False,
         category_id: Optional[int] = None,
         condition: Optional[str] = None,
         availability_status: Optional[str] = None,
@@ -800,6 +852,7 @@ class DB:
         Tuple[
             int,
             Optional[str],
+            Optional[str],
             str,
             str,
             Optional[str],
@@ -809,6 +862,7 @@ class DB:
             Optional[int],
             Optional[int],
             str,
+            int,
             int,
             int,
             int,
@@ -821,8 +875,8 @@ class DB:
     ]:
         """
         Returns:
-          (id, isbn, title, author, location, length_in, width_in, height_in, weight_lb, weight_oz,
-           condition, price_cents, cost_cents, stock_qty, is_active, uploaded_facebook, uploaded_ebay,
+          (id, barcode, isbn, title, author, location, length_in, width_in, height_in, weight_lb, weight_oz,
+           condition, price_cents, cost_cents, stock_qty, reorder_point, is_active, uploaded_facebook, uploaded_ebay,
            availability_status, category_name)
         """
         s = (search or "").strip()
@@ -830,12 +884,15 @@ class DB:
         params: List[Any] = []
 
         if s:
-            where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
+            where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.barcode,'') LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
             like = f"%{s}%"
-            params += [like, like, like]
+            params += [like, like, like, like]
 
         if in_stock_only:
             where.append("b.stock_qty > 0")
+
+        if low_stock_only:
+            where.append("b.reorder_point > 0 AND b.stock_qty <= b.reorder_point")
 
         if not include_inactive:
             where.append("b.is_active = 1")  # FIX: qualified
@@ -861,9 +918,9 @@ class DB:
 
         sql = f"""
             SELECT
-                b.id, b.isbn, b.title, b.author, b.location,
+                b.id, b.barcode, b.isbn, b.title, b.author, b.location,
                 b.length_in, b.width_in, b.height_in, b.weight_lb, b.weight_oz,
-                b.condition, b.price_cents, b.cost_cents, b.stock_qty, b.is_active,
+                b.condition, b.price_cents, b.cost_cents, b.stock_qty, b.reorder_point, b.is_active,
                 b.uploaded_facebook, b.uploaded_ebay, b.availability_status,
                 c.name
             FROM books b
@@ -880,23 +937,25 @@ class DB:
                 out.append((
                     int(r[0]),
                     r[1],
-                    str(r[2]),
+                    r[2],
                     str(r[3]),
-                    r[4],
+                    str(r[4]),
                     r[5],
                     r[6],
                     r[7],
-                    int(r[8]) if r[8] is not None else None,
+                    r[8],
                     int(r[9]) if r[9] is not None else None,
-                    str(r[10]),
-                    int(r[11]),
+                    int(r[10]) if r[10] is not None else None,
+                    str(r[11]),
                     int(r[12]),
                     int(r[13]),
                     int(r[14]),
                     int(r[15]),
                     int(r[16]),
-                    str(r[17]),
-                    r[18]
+                    int(r[17]),
+                    int(r[18]),
+                    str(r[19]),
+                    r[20]
                 ))
             return out
 
@@ -904,28 +963,29 @@ class DB:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
-                SELECT id, isbn, title, author, category_id, location,
+                SELECT id, barcode, isbn, title, author, category_id, location,
                        length_in, width_in, height_in, weight_lb, weight_oz,
-                       condition, price_cents, cost_cents, stock_qty, is_active,
+                       condition, price_cents, cost_cents, stock_qty, reorder_point, reorder_qty, is_active,
                        uploaded_facebook, uploaded_ebay, availability_status
                 FROM books WHERE id=?;
             """, (int(book_id),))
             return cur.fetchone()
 
-    def get_book_by_isbn(self, isbn: str):
+    def get_book_by_barcode(self, barcode: str):
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
-                SELECT id, isbn, title, author, category_id, location,
+                SELECT id, barcode, isbn, title, author, category_id, location,
                        length_in, width_in, height_in, weight_lb, weight_oz,
-                       condition, price_cents, cost_cents, stock_qty, is_active,
+                       condition, price_cents, cost_cents, stock_qty, reorder_point, reorder_qty, is_active,
                        uploaded_facebook, uploaded_ebay, availability_status
-                FROM books WHERE isbn=?;
-            """, (isbn,))
+                FROM books WHERE barcode=?;
+            """, (barcode,))
             return cur.fetchone()
 
     def add_book(
         self,
+        barcode,
         isbn,
         title,
         author,
@@ -940,6 +1000,8 @@ class DB:
         price_cents,
         cost_cents,
         stock_qty,
+        reorder_point=0,
+        reorder_qty=0,
         is_active=1,
         uploaded_facebook=0,
         uploaded_ebay=0,
@@ -948,14 +1010,15 @@ class DB:
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO books(
-                    isbn, title, author, category_id, location,
+                    barcode, isbn, title, author, category_id, location,
                     length_in, width_in, height_in, weight_lb, weight_oz,
                     condition,
-                    price_cents, cost_cents, stock_qty, is_active,
+                    price_cents, cost_cents, stock_qty, reorder_point, reorder_qty, is_active,
                     uploaded_facebook, uploaded_ebay, availability_status
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
             """, (
+                barcode or None,
                 isbn or None,
                 title.strip(),
                 author.strip(),
@@ -970,6 +1033,8 @@ class DB:
                 int(price_cents),
                 int(cost_cents),
                 int(stock_qty),
+                int(reorder_point),
+                int(reorder_qty),
                 int(is_active),
                 int(uploaded_facebook),
                 int(uploaded_ebay),
@@ -980,6 +1045,7 @@ class DB:
     def update_book(
         self,
         book_id,
+        barcode,
         isbn,
         title,
         author,
@@ -994,21 +1060,29 @@ class DB:
         price_cents,
         cost_cents,
         stock_qty,
+        reorder_point,
+        reorder_qty,
         is_active,
         uploaded_facebook,
         uploaded_ebay,
         availability_status,
+        user_id: Optional[int] = None,
     ):
         with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT stock_qty FROM books WHERE id=?;", (int(book_id),))
+            row = cur.fetchone()
+            prev_stock = int(row[0]) if row else None
             conn.execute("""
                 UPDATE books
-                SET isbn=?, title=?, author=?, category_id=?, location=?,
+                SET barcode=?, isbn=?, title=?, author=?, category_id=?, location=?,
                     length_in=?, width_in=?, height_in=?, weight_lb=?, weight_oz=?,
                     condition=?,
-                    price_cents=?, cost_cents=?, stock_qty=?, is_active=?,
+                    price_cents=?, cost_cents=?, stock_qty=?, reorder_point=?, reorder_qty=?, is_active=?,
                     uploaded_facebook=?, uploaded_ebay=?, availability_status=?
                 WHERE id=?;
             """, (
+                barcode or None,
                 isbn or None,
                 title.strip(),
                 author.strip(),
@@ -1023,12 +1097,24 @@ class DB:
                 int(price_cents),
                 int(cost_cents),
                 int(stock_qty),
+                int(reorder_point),
+                int(reorder_qty),
                 int(is_active),
                 int(uploaded_facebook),
                 int(uploaded_ebay),
                 availability_status,
                 int(book_id),
             ))
+            if prev_stock is not None and int(stock_qty) != prev_stock:
+                delta = int(stock_qty) - prev_stock
+                self._log_inventory_adjustment(
+                    conn,
+                    int(book_id),
+                    delta,
+                    "manual_edit",
+                    "Edit item stock",
+                    user_id,
+                )
             conn.commit()
 
     def set_book_location(self, book_id: int, location: Optional[str]) -> None:
@@ -1041,7 +1127,32 @@ class DB:
             conn.execute("DELETE FROM books WHERE id=?;", (int(book_id),))
             conn.commit()
 
-    def adjust_stock(self, book_id: int, delta: int) -> None:
+    def _log_inventory_adjustment(
+        self,
+        conn: sqlite3.Connection,
+        book_id: int,
+        delta: int,
+        reason: str,
+        note: Optional[str],
+        user_id: Optional[int],
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO inventory_adjustments(
+                created_at, book_id, delta_qty, reason, note, user_id
+            ) VALUES(?,?,?,?,?,?);
+            """,
+            (
+                now_ts(),
+                int(book_id),
+                int(delta),
+                reason.strip(),
+                note.strip() if note else None,
+                int(user_id) if user_id is not None else None,
+            ),
+        )
+
+    def adjust_stock(self, book_id: int, delta: int, reason: str, note: Optional[str], user_id: Optional[int]) -> None:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("SELECT stock_qty FROM books WHERE id=?;", (int(book_id),))
@@ -1052,6 +1163,7 @@ class DB:
             if new_qty < 0:
                 raise ValueError("insufficient stock")
             cur.execute("UPDATE books SET stock_qty=? WHERE id=?;", (new_qty, int(book_id)))
+            self._log_inventory_adjustment(conn, book_id, delta, reason, note, user_id)
             conn.commit()
 
     def set_book_active(self, book_id: int, active: int) -> None:
@@ -1210,6 +1322,7 @@ class DB:
             payment_status="paid",
             note=f"Platform sale via {platform_name}",
             platform=platform_name,
+            user_id=None,
         )
 
         self.delete_platform_sale(platform_sale_id)
@@ -1225,9 +1338,9 @@ class DB:
         where = []
         s = (search or "").strip()
         if s:
-            where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
+            where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.barcode,'') LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
             like = f"%{s}%"
-            params += [like, like, like]
+            params += [like, like, like, like]
         if statuses:
             st = [st.strip().lower() for st in statuses]
             where.append("ps.status IN ({})".format(",".join("?" for _ in st)))
@@ -1463,6 +1576,7 @@ class DB:
         payment_status: str,
         note: str,
         platform: str = "In-store",
+        user_id: Optional[int] = None,
     ) -> Tuple[int, str, str]:
         if not cart_items:
             raise ValueError("cart empty")
@@ -1617,6 +1731,14 @@ class DB:
                 ))
 
                 cur.execute("UPDATE books SET stock_qty = stock_qty - ? WHERE id=?;", (int(ln["qty"]), int(ln["book_id"])))
+                self._log_inventory_adjustment(
+                    conn,
+                    int(ln["book_id"]),
+                    -int(ln["qty"]),
+                    "sale",
+                    f"Receipt {receipt_no}",
+                    user_id,
+                )
 
             conn.commit()
             return sale_id, receipt_no, receipt_text
@@ -1662,7 +1784,7 @@ class DB:
             conn.execute("UPDATE sales SET payment_status=? WHERE id=?;", (status_norm, int(sale_id)))
             conn.commit()
 
-    def void_sale(self, sale_id: int) -> None:
+    def void_sale(self, sale_id: int, user_id: Optional[int] = None) -> None:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("SELECT is_void FROM sales WHERE id=?;", (int(sale_id),))
@@ -1674,14 +1796,25 @@ class DB:
             cur.execute("SELECT COUNT(*) FROM returns WHERE sale_id=?;", (int(sale_id),))
             if int(cur.fetchone()[0]) > 0:
                 raise ValueError("cannot void sale with returns")
+            cur.execute("SELECT receipt_no FROM sales WHERE id=?;", (int(sale_id),))
+            rno_row = cur.fetchone()
+            receipt_no = rno_row[0] if rno_row else str(sale_id)
             cur.execute("SELECT book_id, quantity FROM sale_items WHERE sale_id=?;", (int(sale_id),))
             items = cur.fetchall()
             for book_id, qty in items:
                 cur.execute("UPDATE books SET stock_qty = stock_qty + ? WHERE id=?;", (int(qty), int(book_id)))
+                self._log_inventory_adjustment(
+                    conn,
+                    int(book_id),
+                    int(qty),
+                    "void_sale",
+                    f"Receipt {receipt_no}",
+                    user_id,
+                )
             cur.execute("UPDATE sales SET is_void=1 WHERE id=?;", (int(sale_id),))
             conn.commit()
 
-    def delete_sale(self, sale_id: int) -> None:
+    def delete_sale(self, sale_id: int, user_id: Optional[int] = None) -> None:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("SELECT is_void FROM sales WHERE id=?;", (int(sale_id),))
@@ -1693,10 +1826,21 @@ class DB:
             if int(cur.fetchone()[0]) > 0:
                 raise ValueError("delete returns first")
             if not is_void:
+                cur.execute("SELECT receipt_no FROM sales WHERE id=?;", (int(sale_id),))
+                rno_row = cur.fetchone()
+                receipt_no = rno_row[0] if rno_row else str(sale_id)
                 cur.execute("SELECT book_id, quantity FROM sale_items WHERE sale_id=?;", (int(sale_id),))
                 items = cur.fetchall()
                 for book_id, qty in items:
                     cur.execute("UPDATE books SET stock_qty = stock_qty + ? WHERE id=?;", (int(qty), int(book_id)))
+                    self._log_inventory_adjustment(
+                        conn,
+                        int(book_id),
+                        int(qty),
+                        "delete_sale",
+                        f"Receipt {receipt_no}",
+                        user_id,
+                    )
             cur.execute("DELETE FROM sales WHERE id=?;", (int(sale_id),))
             conn.commit()
 
@@ -1711,7 +1855,14 @@ class DB:
             """, (int(customer_id),))
             return [(int(a), b, c, int(d), e) for (a, b, c, d, e) in cur.fetchall()]
 
-    def create_return(self, sale_id: int, items: List[Tuple[int, int]], reason: str, refund_method: str):
+    def create_return(
+        self,
+        sale_id: int,
+        items: List[Tuple[int, int]],
+        reason: str,
+        refund_method: str,
+        user_id: Optional[int] = None,
+    ):
         if not items:
             raise ValueError("no return items")
 
@@ -1794,6 +1945,14 @@ class DB:
                 """, (return_id, int(book_id), int(qty), int(unit), int(line_total)))
 
                 cur.execute("UPDATE books SET stock_qty = stock_qty + ? WHERE id=?;", (int(qty), int(book_id)))
+                self._log_inventory_adjustment(
+                    conn,
+                    int(book_id),
+                    int(qty),
+                    "return",
+                    f"Return {return_id} (receipt {receipt_no})",
+                    user_id,
+                )
 
             conn.commit()
             return return_id, receipt_text
@@ -1810,16 +1969,52 @@ class DB:
             """, (int(limit),))
             return [(int(a), b, c, int(d), e) for (a, b, c, d, e) in cur.fetchall()]
 
-    def delete_return(self, return_id: int) -> None:
+    def list_inventory_adjustments(self, limit: int = 200):
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT ia.created_at, b.title, ia.delta_qty, ia.reason, ia.note, u.username
+                FROM inventory_adjustments ia
+                JOIN books b ON b.id = ia.book_id
+                LEFT JOIN users u ON u.id = ia.user_id
+                ORDER BY ia.id DESC
+                LIMIT ?;
+            """, (int(limit),))
+            rows = cur.fetchall()
+            return [
+                (ts, title, int(delta), reason, note or "", username or "")
+                for (ts, title, delta, reason, note, username) in rows
+            ]
+
+    def delete_return(self, return_id: int, user_id: Optional[int] = None) -> None:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("SELECT id FROM returns WHERE id=?;", (int(return_id),))
             if not cur.fetchone():
                 raise ValueError("return missing")
+            cur.execute("SELECT sale_id FROM returns WHERE id=?;", (int(return_id),))
+            sale_row = cur.fetchone()
+            sale_id = sale_row[0] if sale_row else None
+            receipt_no = None
+            if sale_id is not None:
+                cur.execute("SELECT receipt_no FROM sales WHERE id=?;", (int(sale_id),))
+                rno_row = cur.fetchone()
+                receipt_no = rno_row[0] if rno_row else None
             cur.execute("SELECT book_id, quantity FROM return_items WHERE return_id=?;", (int(return_id),))
             items = cur.fetchall()
             for book_id, qty in items:
                 cur.execute("UPDATE books SET stock_qty = stock_qty - ? WHERE id=?;", (int(qty), int(book_id)))
+                note = f"Delete return {return_id}"
+                if receipt_no:
+                    note = f"{note} (receipt {receipt_no})"
+                self._log_inventory_adjustment(
+                    conn,
+                    int(book_id),
+                    -int(qty),
+                    "delete_return",
+                    note,
+                    user_id,
+                )
             cur.execute("DELETE FROM returns WHERE id=?;", (int(return_id),))
             conn.commit()
 
@@ -2257,6 +2452,7 @@ class App:
         self.book_search = tk.StringVar()
         self.book_instock = tk.IntVar(value=0)
         self.book_inactive = tk.IntVar(value=0)
+        self.book_low_stock = tk.IntVar(value=0)
         self.book_condition_filter = tk.StringVar(value="All")
         self.book_availability_filter = tk.StringVar(value="Available")
         self.book_uploaded_filter = tk.StringVar(value="Any")
@@ -2268,6 +2464,7 @@ class App:
 
         ttk.Checkbutton(top, text="In stock only", variable=self.book_instock, command=self.refresh_books).pack(side="left")
         ttk.Checkbutton(top, text="Include archived", variable=self.book_inactive, command=self.refresh_books).pack(side="left", padx=10)
+        ttk.Checkbutton(top, text="Low stock only", variable=self.book_low_stock, command=self.refresh_books).pack(side="left", padx=(0, 10))
 
         ttk.Label(top, text="Condition:").pack(side="left", padx=(10, 0))
         condition_combo = ttk.Combobox(
@@ -2307,7 +2504,8 @@ class App:
         ttk.Button(top, text="Archive/Unarchive", command=self.toggle_book_active).pack(side="left", padx=6)
         ttk.Button(top, text="Delete", command=self.delete_book).pack(side="left", padx=6)
         ttk.Button(top, text="Restock", command=self.restock_book).pack(side="left", padx=6)
-        ttk.Button(top, text="Export CSV", command=self.export_books_csv).pack(side="right")
+        ttk.Button(top, text="Import CSV", command=self.import_books_csv).pack(side="right")
+        ttk.Button(top, text="Export CSV", command=self.export_books_csv).pack(side="right", padx=(0, 8))
 
         customize = ttk.LabelFrame(tab, text="Customize view")
         customize.pack(fill="x", padx=10, pady=(0, 8))
@@ -2391,6 +2589,7 @@ class App:
 
         self.books_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.books_tree.bind("<Double-1>", lambda _e: self.edit_book())
+        self.books_tree.tag_configure("low_stock", background="#fff3cd")
         self._apply_book_column_visibility()
 
     def refresh_books(self):
@@ -2401,6 +2600,7 @@ class App:
             search=self.book_search.get(),
             in_stock_only=bool(self.book_instock.get()),
             include_inactive=bool(self.book_inactive.get()),
+            low_stock_only=bool(self.book_low_stock.get()),
             condition=None if self.book_condition_filter.get() == "All" else self.book_condition_filter.get(),
             availability_status=None
             if self.book_availability_filter.get() == "All"
@@ -2413,7 +2613,8 @@ class App:
         )
         for (
             bid,
-            isbn,
+            barcode,
+            _isbn,
             title,
             author,
             location,
@@ -2426,16 +2627,20 @@ class App:
             price,
             cost,
             stock,
+            reorder_point,
             active,
             uploaded_facebook,
             uploaded_ebay,
             availability_status,
             catname,
         ) in rows:
+            tags = ()
+            if reorder_point and stock <= reorder_point:
+                tags = ("low_stock",)
             self.books_tree.insert(
                 "", "end", iid=str(bid),
                 values=(
-                    isbn or "",
+                    barcode or "",
                     title,
                     author,
                     catname or "",
@@ -2450,7 +2655,8 @@ class App:
                     "yes" if active else "no",
                     "yes" if uploaded_facebook else "no",
                     "yes" if uploaded_ebay else "no",
-                )
+                ),
+                tags=tags,
             )
 
         self._refresh_pos_books()
@@ -2500,6 +2706,7 @@ class App:
         frame.pack(fill="both", expand=True)
 
         scan_var = tk.StringVar(value="")
+        barcode_var = tk.StringVar(value="")
         isbn_var = tk.StringVar(value="")
         title_var = tk.StringVar(value="")
         author_var = tk.StringVar(value="")
@@ -2514,6 +2721,8 @@ class App:
         price_var = tk.StringVar(value="0.00")
         cost_var = tk.StringVar(value="0.00")
         stock_var = tk.StringVar(value="1")
+        reorder_point_var = tk.StringVar(value="0")
+        reorder_qty_var = tk.StringVar(value="0")
         uploaded_facebook_var = tk.IntVar(value=0)
         uploaded_ebay_var = tk.IntVar(value=0)
         add_another_var = tk.IntVar(value=0)
@@ -2528,7 +2737,7 @@ class App:
                 return
             barcode, price = parse_scan_barcode_and_price(raw)
             if barcode:
-                isbn_var.set(barcode)
+                barcode_var.set(barcode)
             if price:
                 price_var.set(price)
             if not barcode and not price:
@@ -2547,11 +2756,11 @@ class App:
                     show_status("Parsed barcode, but lookup failed (enter item/brand manually).")
 
         def do_lookup_barcode():
-            barcode = normalize_barcode(isbn_var.get())
+            barcode = normalize_barcode(barcode_var.get())
             if not barcode:
                 messagebox.showerror("Invalid barcode", "No valid barcode detected in Barcode field.", parent=dlg)
                 return
-            isbn_var.set(barcode)
+            barcode_var.set(barcode)
             info = fetch_title_info_upcitemdb(barcode)
             if not info:
                 messagebox.showerror("Lookup failed", "Could not fetch metadata (no result or no internet).", parent=dlg)
@@ -2577,8 +2786,12 @@ class App:
         r += 1
 
         ttk.Label(frame, text="Barcode:").grid(row=r, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=isbn_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        ttk.Entry(frame, textvariable=barcode_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         ttk.Button(frame, text="Lookup Barcode", command=do_lookup_barcode).grid(row=r, column=2, padx=8)
+        r += 1
+
+        ttk.Label(frame, text="ISBN (optional):").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=isbn_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
         ttk.Label(frame, text="Item name:").grid(row=r, column=0, sticky="w", pady=4)
@@ -2657,6 +2870,14 @@ class App:
         ttk.Entry(frame, textvariable=stock_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
+        ttk.Label(frame, text="Reorder point:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=reorder_point_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        r += 1
+
+        ttk.Label(frame, text="Reorder qty:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=reorder_qty_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        r += 1
+
         upload_frame = ttk.Frame(frame)
         upload_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=4)
         ttk.Label(upload_frame, text="Uploaded to:").pack(side="left")
@@ -2674,7 +2895,8 @@ class App:
         r += 1
 
         def on_add():
-            isbn = normalize_barcode(isbn_var.get()) or None
+            barcode = normalize_barcode(barcode_var.get()) or None
+            isbn = (isbn_var.get().strip() or None)
             title = title_var.get().strip()
             author = author_var.get().strip()
             cat_name = cat_var.get().strip()
@@ -2688,6 +2910,8 @@ class App:
             price_s = price_var.get().strip()
             cost_s = cost_var.get().strip()
             stock_s = stock_var.get().strip()
+            reorder_point_s = reorder_point_var.get().strip()
+            reorder_qty_s = reorder_qty_var.get().strip()
             uploaded_facebook = 1 if uploaded_facebook_var.get() else 0
             uploaded_ebay = 1 if uploaded_ebay_var.get() else 0
 
@@ -2706,10 +2930,16 @@ class App:
                 price_cents = dollars_to_cents(price_s)
                 cost_cents = dollars_to_cents(cost_s)
                 stock = int(stock_s)
+                reorder_point = int(reorder_point_s or 0)
+                reorder_qty = int(reorder_qty_s or 0)
                 if stock < 0:
                     raise ValueError
             except Exception:
-                messagebox.showerror("Bad input", "Check dimensions/weight/price/cost/stock values.", parent=dlg)
+                messagebox.showerror("Bad input", "Check dimensions/weight/price/cost/stock/reorder values.", parent=dlg)
+                return
+
+            if reorder_point < 0 or reorder_qty < 0:
+                messagebox.showerror("Bad input", "Reorder values cannot be negative.", parent=dlg)
                 return
 
             if cat_name:
@@ -2735,15 +2965,16 @@ class App:
                         break
 
             try:
-                if isbn:
-                    existing = self.db.get_book_by_isbn(isbn)
+                if barcode:
+                    existing = self.db.get_book_by_barcode(barcode)
                     if existing:
-                        self.db.adjust_stock(int(existing[0]), 1)
-                        merged_location = merge_locations(existing[5], location)
-                        if merged_location != existing[5]:
+                        self.db.adjust_stock(int(existing[0]), stock, "restock", "Add item (merge)", self.user["id"])
+                        merged_location = merge_locations(existing[6], location)
+                        if merged_location != existing[6]:
                             self.db.set_book_location(int(existing[0]), merged_location)
                     else:
                         self.db.add_book(
+                            barcode,
                             isbn,
                             title,
                             author,
@@ -2758,6 +2989,8 @@ class App:
                             price_cents,
                             cost_cents,
                             stock,
+                            reorder_point,
+                            reorder_qty,
                             1,
                             uploaded_facebook,
                             uploaded_ebay,
@@ -2765,6 +2998,7 @@ class App:
                         )
                 else:
                     self.db.add_book(
+                        barcode,
                         isbn,
                         title,
                         author,
@@ -2779,6 +3013,8 @@ class App:
                         price_cents,
                         cost_cents,
                         stock,
+                        reorder_point,
+                        reorder_qty,
                         1,
                         uploaded_facebook,
                         uploaded_ebay,
@@ -2791,12 +3027,15 @@ class App:
             self.refresh_books()
             self.refresh_reports()
             if add_another_var.get():
+                barcode_var.set("")
                 isbn_var.set("")
                 title_var.set("")
                 author_var.set("")
                 price_var.set("0.00")
                 cost_var.set("0.00")
                 stock_var.set("1")
+                reorder_point_var.set("0")
+                reorder_qty_var.set("0")
                 scan_var.set("")
                 length_var.set("")
                 width_var.set("")
@@ -2839,6 +3078,7 @@ class App:
 
         (
             _id,
+            barcode,
             isbn,
             title,
             author,
@@ -2853,6 +3093,8 @@ class App:
             price,
             cost,
             stock,
+            reorder_point,
+            reorder_qty,
             active,
             uploaded_facebook,
             uploaded_ebay,
@@ -2875,6 +3117,7 @@ class App:
         frame = ttk.Frame(dlg, padding=12)
         frame.pack(fill="both", expand=True)
 
+        barcode_var = tk.StringVar(value=barcode or "")
         isbn_var = tk.StringVar(value=isbn or "")
         title_var = tk.StringVar(value=title)
         author_var = tk.StringVar(value=author)
@@ -2890,6 +3133,8 @@ class App:
         price_var = tk.StringVar(value=f"{int(price)/100:.2f}")
         cost_var = tk.StringVar(value=f"{int(cost)/100:.2f}")
         stock_var = tk.StringVar(value=str(stock))
+        reorder_point_var = tk.StringVar(value=str(reorder_point))
+        reorder_qty_var = tk.StringVar(value=str(reorder_qty))
         active_var = tk.IntVar(value=1 if int(active) else 0)
         uploaded_facebook_var = tk.IntVar(value=1 if int(uploaded_facebook) else 0)
         uploaded_ebay_var = tk.IntVar(value=1 if int(uploaded_ebay) else 0)
@@ -2907,6 +3152,10 @@ class App:
 
         r = 0
         ttk.Label(frame, text="Barcode (optional):").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=barcode_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        r += 1
+
+        ttk.Label(frame, text="ISBN (optional):").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=isbn_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
@@ -2996,6 +3245,14 @@ class App:
         ttk.Entry(frame, textvariable=stock_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
+        ttk.Label(frame, text="Reorder point:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=reorder_point_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        r += 1
+
+        ttk.Label(frame, text="Reorder qty:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=reorder_qty_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        r += 1
+
         upload_frame = ttk.Frame(frame)
         upload_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=4)
         ttk.Label(upload_frame, text="Uploaded to:").pack(side="left")
@@ -3011,7 +3268,8 @@ class App:
         r += 1
 
         def on_save():
-            isbn_val = normalize_barcode(isbn_var.get()) or None
+            barcode_val = normalize_barcode(barcode_var.get()) or None
+            isbn_val = isbn_var.get().strip() or None
             title_val = title_var.get().strip()
             author_val = author_var.get().strip()
             cat_name = cat_var.get().strip()
@@ -3026,6 +3284,8 @@ class App:
             price_s = price_var.get().strip()
             cost_s = cost_var.get().strip()
             stock_s = stock_var.get().strip()
+            reorder_point_s = reorder_point_var.get().strip()
+            reorder_qty_s = reorder_qty_var.get().strip()
             uploaded_facebook_val = 1 if uploaded_facebook_var.get() else 0
             uploaded_ebay_val = 1 if uploaded_ebay_var.get() else 0
 
@@ -3047,11 +3307,17 @@ class App:
                 price2 = dollars_to_cents(price_s)
                 cost2 = dollars_to_cents(cost_s)
                 stock2 = int(stock_s)
+                reorder_point2 = int(reorder_point_s or 0)
+                reorder_qty2 = int(reorder_qty_s or 0)
                 active2 = 1 if active_var.get() else 0
                 if stock2 < 0:
                     raise ValueError
             except Exception:
-                messagebox.showerror("Bad input", "Check dimensions/weight/price/cost/stock/active.", parent=dlg)
+                messagebox.showerror("Bad input", "Check dimensions/weight/price/cost/stock/reorder/active.", parent=dlg)
+                return
+
+            if reorder_point2 < 0 or reorder_qty2 < 0:
+                messagebox.showerror("Bad input", "Reorder values cannot be negative.", parent=dlg)
                 return
 
             cat_id2 = None
@@ -3066,6 +3332,7 @@ class App:
             try:
                 self.db.update_book(
                     bid,
+                    barcode_val,
                     isbn_val,
                     title_val,
                     author_val,
@@ -3080,10 +3347,13 @@ class App:
                     price2,
                     cost2,
                     stock2,
+                    reorder_point2,
+                    reorder_qty2,
                     active2,
                     uploaded_facebook_val,
                     uploaded_ebay_val,
                     availability_val,
+                    self.user["id"],
                 )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not update.\n\n{e}", parent=dlg)
@@ -3110,7 +3380,7 @@ class App:
         if not row:
             messagebox.showerror("Missing", "Item not found.")
             return
-        title = row[2]
+        title = row[3]
         if not messagebox.askyesno("Delete Item", f"Delete '{title}' permanently?"):
             return
         try:
@@ -3128,7 +3398,7 @@ class App:
         row = self.db.get_book(bid)
         if not row:
             return
-        active = int(row[15])
+        active = int(row[18])
         self.db.set_book_active(bid, 0 if active else 1)
         self.refresh_books()
 
@@ -3148,7 +3418,7 @@ class App:
             messagebox.showerror("Bad qty", "Enter a positive integer.")
             return
         try:
-            self.db.adjust_stock(bid, qty)
+            self.db.adjust_stock(bid, qty, "restock", "Manual restock", self.user["id"])
         except Exception as e:
             messagebox.showerror("Stock error", str(e))
             return
@@ -3161,6 +3431,7 @@ class App:
         q = """
             SELECT
                 b.id,
+                IFNULL(b.barcode,''),
                 IFNULL(b.isbn,''),
                 b.title,
                 b.author,
@@ -3175,6 +3446,8 @@ class App:
                 b.price_cents,
                 b.cost_cents,
                 b.stock_qty,
+                b.reorder_point,
+                b.reorder_qty,
                 b.is_active,
                 b.uploaded_facebook,
                 b.uploaded_ebay,
@@ -3188,6 +3461,7 @@ class App:
             [
                 "book_id",
                 "barcode",
+                "isbn",
                 "item_name",
                 "brand_details",
                 "category",
@@ -3201,6 +3475,8 @@ class App:
                 "price_cents",
                 "cost_cents",
                 "stock_qty",
+                "reorder_point",
+                "reorder_qty",
                 "is_active",
                 "uploaded_facebook",
                 "uploaded_ebay",
@@ -3209,6 +3485,152 @@ class App:
             path,
         )
         messagebox.showinfo("Exported", f"Saved:\n{path}")
+
+    def import_books_csv(self):
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")], title="Import Items CSV")
+        if not path:
+            return
+        required = {
+            "barcode",
+            "isbn",
+            "item_name",
+            "brand_details",
+            "category",
+            "locations",
+            "length_in",
+            "width_in",
+            "height_in",
+            "weight_lb",
+            "weight_oz",
+            "condition",
+            "price_cents",
+            "cost_cents",
+            "stock_qty",
+            "reorder_point",
+            "reorder_qty",
+            "is_active",
+            "uploaded_facebook",
+            "uploaded_ebay",
+            "availability_status",
+        }
+        inserted = 0
+        updated = 0
+        errors = []
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            headers = {h.strip() for h in (reader.fieldnames or [])}
+            missing = required - headers
+            if missing:
+                messagebox.showerror("Import error", f"Missing columns:\n{', '.join(sorted(missing))}")
+                return
+
+            for idx, row in enumerate(reader, start=2):
+                try:
+                    barcode = normalize_barcode(row.get("barcode", "").strip()) or None
+                    isbn = (row.get("isbn", "").strip() or None)
+                    title = (row.get("item_name", "") or "").strip()
+                    author = (row.get("brand_details", "") or "").strip()
+                    cat_name = (row.get("category", "") or "").strip()
+                    location = normalize_locations(row.get("locations", ""))
+                    condition = (row.get("condition", "") or "Good").strip()
+                    length_in = parse_optional_float(row.get("length_in", ""), "length")
+                    width_in = parse_optional_float(row.get("width_in", ""), "width")
+                    height_in = parse_optional_float(row.get("height_in", ""), "height")
+                    weight_lb = parse_optional_float(row.get("weight_lb", ""), "weight (lb)")
+                    weight_oz = parse_optional_float(row.get("weight_oz", ""), "weight (oz)")
+                    price_cents = int(row.get("price_cents") or 0)
+                    cost_cents = int(row.get("cost_cents") or 0)
+                    stock_qty = int(row.get("stock_qty") or 0)
+                    reorder_point = int(row.get("reorder_point") or 0)
+                    reorder_qty = int(row.get("reorder_qty") or 0)
+                    is_active = 1 if str(row.get("is_active", "1")).strip() in ("1", "yes", "true", "y") else 0
+                    uploaded_facebook = 1 if str(row.get("uploaded_facebook", "0")).strip() in ("1", "yes", "true", "y") else 0
+                    uploaded_ebay = 1 if str(row.get("uploaded_ebay", "0")).strip() in ("1", "yes", "true", "y") else 0
+                    availability_status = (row.get("availability_status", "") or "available").strip()
+
+                    if not title:
+                        raise ValueError("item_name is required")
+                    if condition not in CONDITION_OPTIONS:
+                        raise ValueError("invalid condition")
+                    if weight_oz is not None and weight_oz >= 16:
+                        raise ValueError("weight_oz must be 0-15")
+                    if stock_qty < 0 or reorder_point < 0 or reorder_qty < 0:
+                        raise ValueError("stock/reorder values cannot be negative")
+
+                    cat_id = None
+                    if cat_name:
+                        try:
+                            self.db.add_category(cat_name)
+                        except sqlite3.IntegrityError:
+                            pass
+                        cats_all = self.db.list_categories(include_inactive=True)
+                        cat_id = next((cid for (cid, nm, _ac) in cats_all if nm == cat_name), None)
+
+                    if barcode:
+                        existing = self.db.get_book_by_barcode(barcode)
+                    else:
+                        existing = None
+
+                    if existing:
+                        self.db.update_book(
+                            int(existing[0]),
+                            barcode,
+                            isbn,
+                            title,
+                            author,
+                            cat_id,
+                            location,
+                            length_in,
+                            width_in,
+                            height_in,
+                            weight_lb,
+                            weight_oz,
+                            condition,
+                            price_cents,
+                            cost_cents,
+                            stock_qty,
+                            reorder_point,
+                            reorder_qty,
+                            is_active,
+                            uploaded_facebook,
+                            uploaded_ebay,
+                            availability_status,
+                            self.user["id"],
+                        )
+                        updated += 1
+                    else:
+                        self.db.add_book(
+                            barcode,
+                            isbn,
+                            title,
+                            author,
+                            cat_id,
+                            location,
+                            length_in,
+                            width_in,
+                            height_in,
+                            weight_lb,
+                            weight_oz,
+                            condition,
+                            price_cents,
+                            cost_cents,
+                            stock_qty,
+                            reorder_point,
+                            reorder_qty,
+                            is_active,
+                            uploaded_facebook,
+                            uploaded_ebay,
+                            availability_status,
+                        )
+                        inserted += 1
+                except Exception as exc:
+                    errors.append(f"Row {idx}: {exc}")
+
+        self.refresh_books()
+        self.refresh_reports()
+        if errors:
+            Dialog.show_text(self.root, "Import completed with errors", "\n".join(errors))
+        messagebox.showinfo("Import complete", f"Inserted: {inserted}\nUpdated: {updated}\nErrors: {len(errors)}")
 
     # ---------------- Customers tab ----------------
     def _build_customers_tab(self):
@@ -3233,7 +3655,8 @@ class App:
         ttk.Button(top, text="Edit", command=self.edit_customer).pack(side="left", padx=6)
         ttk.Button(top, text="Archive/Unarchive", command=self.toggle_customer_active).pack(side="left", padx=6)
         ttk.Button(top, text="History", command=self.view_customer_history).pack(side="left", padx=6)
-        ttk.Button(top, text="Export CSV", command=self.export_customers_csv).pack(side="right")
+        ttk.Button(top, text="Import CSV", command=self.import_customers_csv).pack(side="right")
+        ttk.Button(top, text="Export CSV", command=self.export_customers_csv).pack(side="right", padx=(0, 8))
 
         self.customers_tree = ttk.Treeview(tab, columns=("name", "email", "active"), show="headings", height=18)
         self.customers_tree.heading("name", text="Name")
@@ -3328,6 +3751,47 @@ class App:
         q = "SELECT name, email, is_active FROM customers ORDER BY name;"
         self.db.export_table_to_csv(q, ["name", "email", "is_active"], path)
         messagebox.showinfo("Exported", f"Saved:\n{path}")
+
+    def import_customers_csv(self):
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")], title="Import Customers CSV")
+        if not path:
+            return
+        required = {"name", "email", "is_active"}
+        inserted = 0
+        updated = 0
+        errors = []
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            headers = {h.strip() for h in (reader.fieldnames or [])}
+            missing = required - headers
+            if missing:
+                messagebox.showerror("Import error", f"Missing columns:\n{', '.join(sorted(missing))}")
+                return
+
+            for idx, row in enumerate(reader, start=2):
+                try:
+                    name = (row.get("name", "") or "").strip()
+                    email = (row.get("email", "") or "").strip()
+                    is_active = 1 if str(row.get("is_active", "1")).strip() in ("1", "yes", "true", "y") else 0
+                    if not name or not email:
+                        raise ValueError("name and email are required")
+                    with self.db._connect() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT id FROM customers WHERE name=? AND email=?;", (name, email))
+                        existing = cur.fetchone()
+                    if existing:
+                        self.db.update_customer(int(existing[0]), name, email, is_active)
+                        updated += 1
+                    else:
+                        self.db.add_customer(name, email, is_active)
+                        inserted += 1
+                except Exception as exc:
+                    errors.append(f"Row {idx}: {exc}")
+
+        self.refresh_customers()
+        if errors:
+            Dialog.show_text(self.root, "Customer import errors", "\n".join(errors))
+        messagebox.showinfo("Import complete", f"Inserted: {inserted}\nUpdated: {updated}\nErrors: {len(errors)}")
 
     # ---------------- POS tab ----------------
     def _build_pos_tab(self):
@@ -3445,7 +3909,8 @@ class App:
         )
         for (
             bid,
-            isbn,
+            barcode,
+            _isbn,
             title,
             _author,
             _location,
@@ -3458,6 +3923,7 @@ class App:
             price,
             _cost,
             stock,
+            _reorder_point,
             _active,
             _uploaded_facebook,
             _uploaded_ebay,
@@ -3465,7 +3931,7 @@ class App:
             _cat,
         ) in rows:
             self.pos_books_tree.insert(
-                "", "end", iid=str(bid), values=(isbn or "", title, condition or "", cents_to_money(price), stock)
+                "", "end", iid=str(bid), values=(barcode or "", title, condition or "", cents_to_money(price), stock)
             )
 
     def _prefill_platform_price(self):
@@ -3476,7 +3942,7 @@ class App:
         row = self.db.get_book(bid)
         if not row:
             return
-        price_cents = int(row[12])
+        price_cents = int(row[13])
         price_text = f"{price_cents / 100:.2f}"
         self.platform_listed_var.set(price_text)
         self.platform_final_var.set(price_text)
@@ -3991,7 +4457,7 @@ class App:
         if not messagebox.askyesno("Void sale", "Void this sale and restock items?"):
             return
         try:
-            self.db.void_sale(sid)
+            self.db.void_sale(sid, self.user["id"])
         except Exception as e:
             messagebox.showerror("Void failed", str(e))
             return
@@ -4007,7 +4473,7 @@ class App:
         if not messagebox.askyesno("Delete sale", "Delete this sale? This cannot be undone."):
             return
         try:
-            self.db.delete_sale(sid)
+            self.db.delete_sale(sid, self.user["id"])
         except Exception as e:
             messagebox.showerror("Delete failed", str(e))
             return
@@ -4071,7 +4537,13 @@ class App:
                 messagebox.showerror("No items", "You must return at least one item.", parent=dlg)
                 return
             try:
-                rid, receipt_text = self.db.create_return(sid, pick, reason_var.get().strip(), method_var.get())
+                rid, receipt_text = self.db.create_return(
+                    sid,
+                    pick,
+                    reason_var.get().strip(),
+                    method_var.get(),
+                    self.user["id"],
+                )
             except Exception as e:
                 messagebox.showerror("Return failed", str(e), parent=dlg)
                 return
@@ -4129,7 +4601,7 @@ class App:
         if not messagebox.askyesno("Delete return", "Delete this return? This cannot be undone."):
             return
         try:
-            self.db.delete_return(rid)
+            self.db.delete_return(rid, self.user["id"])
         except Exception as e:
             messagebox.showerror("Delete failed", str(e))
             return
@@ -4236,6 +4708,26 @@ class App:
         returns_btns = ttk.Frame(returns_frame)
         returns_btns.pack(fill="x")
         ttk.Button(returns_btns, text="Delete Return", command=lambda: self.delete_return_ui(self.reports_returns_tree)).pack(side="left")
+
+        adjustments = ttk.LabelFrame(right, text="Inventory adjustments (recent)")
+        adjustments.pack(fill="both", expand=False, pady=(0, 10))
+        self.adjustments_tree = ttk.Treeview(
+            adjustments,
+            columns=("ts", "item", "delta", "reason", "user", "note"),
+            show="headings",
+            height=5,
+        )
+        for c, l, w, a in [
+            ("ts", "Date", 140, "w"),
+            ("item", "Item", 220, "w"),
+            ("delta", "Δ Qty", 60, "center"),
+            ("reason", "Reason", 100, "w"),
+            ("user", "User", 90, "w"),
+            ("note", "Note", 160, "w"),
+        ]:
+            self.adjustments_tree.heading(c, text=l)
+            self.adjustments_tree.column(c, width=w, anchor=a)
+        self.adjustments_tree.pack(fill="x", padx=8, pady=8)
 
         daily = ttk.LabelFrame(left, text="Daily (last 30 days) — revenue, refunds, net, tax")
         daily.pack(fill="both", expand=True, pady=(0, 10))
@@ -4347,6 +4839,15 @@ class App:
                 self.reports_returns_tree.insert(
                     "", "end", iid=str(rid),
                     values=(ts, orig_rno, cents_to_money(refund), method),
+                )
+
+        if hasattr(self, "adjustments_tree"):
+            for i in self.adjustments_tree.get_children():
+                self.adjustments_tree.delete(i)
+            for ts, title, delta, reason, note, username in self.db.list_inventory_adjustments(50):
+                self.adjustments_tree.insert(
+                    "", "end",
+                    values=(ts, title, f"{delta:+d}", reason, username, note),
                 )
 
     def export_sales_csv(self):
