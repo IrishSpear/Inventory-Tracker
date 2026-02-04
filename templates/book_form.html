@@ -6,17 +6,38 @@
     <div class="card-body">
       <form method="post">
         <div class="row g-3">
+          {% if show_scan %}
+          <div class="col-12">
+            <div class="border rounded-3 p-3 bg-white">
+              <div class="row g-3 align-items-end">
+                <div class="col-md-6">
+                  <label class="form-label" for="scan_input">Scan (barcode or price-only)</label>
+                  <input class="form-control" id="scan_input" name="scan_input" autocomplete="off">
+                </div>
+                <div class="col-md-3">
+                  <button class="btn btn-outline-primary w-100" type="button" id="scan_parse_btn">Parse Scan</button>
+                </div>
+                <div class="col-md-3">
+                  <button class="btn btn-outline-secondary w-100" type="button" id="barcode_lookup_btn">Lookup Barcode</button>
+                </div>
+                <div class="col-12">
+                  <div class="text-muted small" id="scan_status">Scan a barcode to auto-fill item info.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endif %}
           <div class="col-md-6">
             <label class="form-label">Title</label>
-            <input class="form-control" name="title" value="{{ book[3] if book else '' }}" required>
+            <input class="form-control" name="title" value="{{ book[3] if book else '' }}" required id="title_input">
           </div>
           <div class="col-md-6">
             <label class="form-label">Author/Brand</label>
-            <input class="form-control" name="author" value="{{ book[4] if book else '' }}" required>
+            <input class="form-control" name="author" value="{{ book[4] if book else '' }}" required id="author_input">
           </div>
           <div class="col-md-3">
             <label class="form-label">Barcode</label>
-            <input class="form-control" name="barcode" value="{{ book[1] if book else '' }}">
+            <input class="form-control" name="barcode" value="{{ book[1] if book else '' }}" id="barcode_input">
           </div>
           <div class="col-md-3">
             <label class="form-label">ISBN</label>
@@ -73,7 +94,7 @@
           </div>
           <div class="col-md-3">
             <label class="form-label">Price</label>
-            <input class="form-control" name="price" value="{{ cents_to_money(book[13]) if book else '' }}">
+            <input class="form-control" name="price" value="{{ cents_to_money(book[13]) if book else '' }}" id="price_input">
           </div>
           <div class="col-md-3">
             <label class="form-label">Cost</label>
@@ -120,4 +141,77 @@
       </form>
     </div>
   </div>
+  {% if show_scan %}
+  <script>
+    (() => {
+      const scanInput = document.getElementById("scan_input");
+      const parseButton = document.getElementById("scan_parse_btn");
+      const lookupButton = document.getElementById("barcode_lookup_btn");
+      const statusEl = document.getElementById("scan_status");
+      const barcodeInput = document.getElementById("barcode_input");
+      const priceInput = document.getElementById("price_input");
+      const titleInput = document.getElementById("title_input");
+      const authorInput = document.getElementById("author_input");
+
+      const setStatus = (message, tone = "text-muted") => {
+        statusEl.className = `small ${tone}`;
+        statusEl.textContent = message;
+      };
+
+      const applyLookup = (data) => {
+        if (data.barcode) {
+          barcodeInput.value = data.barcode;
+        }
+        if (data.price) {
+          priceInput.value = data.price;
+        }
+        if (data.title && !titleInput.value.trim()) {
+          titleInput.value = data.title;
+        }
+        if (data.author && !authorInput.value.trim()) {
+          authorInput.value = data.author;
+        }
+        if (data.title || data.author) {
+          setStatus("Parsed scan and filled item info.", "text-success");
+        } else {
+          setStatus("Parsed scan. Enter item info if needed.", "text-warning");
+        }
+      };
+
+      const runLookup = async (scanValue) => {
+        if (!scanValue) {
+          setStatus("Scan value is required.", "text-danger");
+          return;
+        }
+        setStatus("Parsing scan...");
+        try {
+          const response = await fetch("{{ url_for('book_scan') }}", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ scan: scanValue }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            setStatus(data.error || "Scan failed.", "text-danger");
+            return;
+          }
+          applyLookup(data);
+        } catch (error) {
+          setStatus("Scan lookup failed. Check your connection.", "text-danger");
+        }
+      };
+
+      parseButton?.addEventListener("click", () => runLookup(scanInput.value.trim()));
+      lookupButton?.addEventListener("click", () => runLookup(barcodeInput.value.trim()));
+      scanInput?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          runLookup(scanInput.value.trim());
+        }
+      });
+    })();
+  </script>
+  {% endif %}
 {% endblock %}
