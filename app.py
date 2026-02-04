@@ -1,19 +1,19 @@
-# dvd_vhs_tracker.py
-# Single-file Tkinter + SQLite DVD/VHS POS with:
-# - Inventory, formats, coupons, discounts (line + order), taxes
+# inventory_tracker.py
+# Single-file Tkinter + SQLite inventory POS with:
+# - Inventory, categories, coupons, discounts (line + order), taxes
 # - Cart with inline qty/line-discount editing
 # - Sales + receipt storage, TXT/PDF export (PDF via reportlab if installed)
 # - Returns/refunds (restock inventory)
-# - Reports: daily/monthly, top titles/customers, by format, tax export
+# - Reports: daily/monthly, top items/customers, by category, tax export
 # - Users + roles (admin/clerk), store/receipt settings, backup/restore
-# - Add Title dialog supports scanning:
-#     * UPC/EAN barcode -> auto lookup title/studio (UPCItemDB trial, needs internet)
+# - Add Item dialog supports scanning:
+#     * UPC/EAN barcode -> auto lookup item/brand (UPCItemDB trial, needs internet)
 #     * Price-only sticker (digits like 1299) -> parse price
 #
 # NOTE:
 # - If you have an existing old DB schema, this file includes a best-effort migration
 #   for an older sales schema that had sales.book_id. If migration cannot be applied,
-#   you may need to delete dvd_vhs_tracker.db and re-run.
+#   you may need to delete inventory_tracker.db and re-run.
 #
 # Tested for logical correctness, but I cannot run this on your machine.
 
@@ -36,8 +36,8 @@ from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
 
-DB_PATH = "dvd_vhs_tracker.db"
-USER_AGENT = "DVDVHSPOS/1.0 (+https://openai.com)"
+DB_PATH = "inventory_tracker.db"
+USER_AGENT = "InventoryPOS/1.0 (+https://openai.com)"
 
 
 # -------------------------- Money helpers (integer cents) --------------------------
@@ -245,7 +245,7 @@ def fetch_json_with_retry(url: str, timeout: int = 8, retries: int = 2) -> Tuple
 
 def fetch_title_info_upcitemdb(barcode: str) -> Optional[Dict[str, str]]:
     """
-    Lookup title/studio via UPCItemDB trial API.
+    Lookup item/brand via UPCItemDB trial API.
     Requires internet access. Returns {"title":..., "studio":...} or None.
     """
     if not barcode:
@@ -310,7 +310,7 @@ class DB:
             # Unknown old schema; safest is to stop and ask user to reset DB
             raise RuntimeError(
                 "Detected an older 'sales' table with book_id but unknown columns. "
-                "Please delete dvd_vhs_tracker.db and re-run, or provide your sales schema for a custom migration."
+                "Please delete inventory_tracker.db and re-run, or provide your sales schema for a custom migration."
             )
 
         cur = conn.cursor()
@@ -547,7 +547,7 @@ class DB:
 
             # Seed settings
             defaults = {
-                "store_name": "My DVD/VHS Store",
+                "store_name": "My Resale Store",
                 "store_address": "123 Main St",
                 "store_phone": "(000) 000-0000",
                 "receipt_footer": "Thank you! Returns with receipt within 14 days.",
@@ -645,7 +645,7 @@ class DB:
             conn.execute("UPDATE categories SET is_active=? WHERE id=?;", (int(active), int(cat_id)))
             conn.commit()
 
-    # -------- Titles --------
+    # -------- Items --------
     def list_books(
         self,
         search: str = "",
@@ -759,7 +759,7 @@ class DB:
             cur.execute("SELECT stock_qty FROM books WHERE id=?;", (int(book_id),))
             row = cur.fetchone()
             if not row:
-                raise ValueError("title missing")
+                raise ValueError("item missing")
             new_qty = int(row[0]) + int(delta)
             if new_qty < 0:
                 raise ValueError("insufficient stock")
@@ -906,7 +906,7 @@ class DB:
         out.append(f"Date:    {created_at}")
         out.append(f"Customer:{customer_name}  <{customer_email}>")
         out.append("-" * 64)
-        out.append(f"{'Title':34} {'Qty':>3} {'Unit':>10} {'Line':>10}")
+        out.append(f"{'Item':34} {'Qty':>3} {'Unit':>10} {'Line':>10}")
         out.append("-" * 64)
 
         for r in lines:
@@ -981,12 +981,12 @@ class DB:
                 """, (book_id,))
                 b = cur.fetchone()
                 if not b:
-                    raise ValueError("title missing")
+                    raise ValueError("item missing")
                 title, author, price_cents, cost_cents, stock_qty, is_active = b
                 if not int(is_active):
-                    raise ValueError(f"title archived: {title}")
+                    raise ValueError(f"item archived: {title}")
                 if int(stock_qty) < qty:
-                    raise ValueError(f"insufficient stock for '{title}' (have {stock_qty}, need {qty})")
+                    raise ValueError(f"insufficient stock for item '{title}' (have {stock_qty}, need {qty})")
 
                 unit_price = int(it.get("unit_price_cents", price_cents))
                 unit_cost = int(it.get("unit_cost_cents", cost_cents))
@@ -994,7 +994,7 @@ class DB:
                 line_sub = unit_price * qty
                 line_disc = int(it.get("line_discount_cents", 0))
                 if line_disc < 0 or line_disc > line_sub:
-                    raise ValueError(f"bad line discount for '{title}'")
+                    raise ValueError(f"bad line discount for item '{title}'")
                 line_total = line_sub - line_disc
 
                 item_total += line_total
@@ -1176,7 +1176,7 @@ class DB:
                 if qty <= 0:
                     raise ValueError("bad qty")
                 if book_id not in orig_map:
-                    raise ValueError("title not in original sale")
+                    raise ValueError("item not in original sale")
                 if qty > orig_map[book_id]["qty"]:
                     raise ValueError("return qty exceeds sold qty")
                 unit = orig_map[book_id]["unit"]
@@ -1195,13 +1195,13 @@ class DB:
             header.append(f"Date: {created_at}")
             header.append(f"Reason: {reason or ''}")
             header.append("-" * 64)
-            header.append(f"{'Title':34} {'Qty':>3} {'Unit':>10} {'Line':>10}")
+            header.append(f"{'Item':34} {'Qty':>3} {'Unit':>10} {'Line':>10}")
             header.append("-" * 64)
 
             for (book_id, qty, unit, line_total) in receipt_lines:
                 cur.execute("SELECT title FROM books WHERE id=?;", (int(book_id),))
                 t = cur.fetchone()
-                title = t[0] if t else f"Title #{book_id}"
+                title = t[0] if t else f"Item #{book_id}"
                 if len(title) > 34:
                     title = title[:33] + "…"
                 header.append(f"{title:34} {qty:>3} {cents_to_money(unit):>10} {cents_to_money(line_total):>10}")
@@ -1537,10 +1537,10 @@ class App:
         self.db = DB(DB_PATH)
         self.user = None  # dict{id,username,role}
         self.cart: Dict[int, Dict[str, Any]] = {}
-        self.last_format_choice = ""
+        self.last_category_choice = ""
 
         self.root = tk.Tk()
-        self.root.title("DVD/VHS POS (Fixed)")
+        self.root.title("Inventory POS")
         self.root.geometry("1200x720")
 
         self._login()
@@ -1574,7 +1574,7 @@ class App:
             auth = self.db.auth_user(u, p)
             if auth:
                 self.user = auth
-                self.root.title(f"DVD/VHS POS — {auth['username']} ({auth['role']})")
+                self.root.title(f"Inventory POS — {auth['username']} ({auth['role']})")
                 return
             messagebox.showerror("Login failed", "Invalid username/password or inactive user.")
 
@@ -1584,10 +1584,10 @@ class App:
             return False
         return True
 
-    # ---------------- Titles tab ----------------
+    # ---------------- Items tab ----------------
     def _build_books_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="DVD/VHS")
+        self.notebook.add(tab, text="Inventory")
         self.books_tab = tab
 
         top = ttk.Frame(tab)
@@ -1605,7 +1605,7 @@ class App:
         ttk.Checkbutton(top, text="In stock only", variable=self.book_instock, command=self.refresh_books).pack(side="left")
         ttk.Checkbutton(top, text="Include archived", variable=self.book_inactive, command=self.refresh_books).pack(side="left", padx=10)
 
-        ttk.Button(top, text="Add (scan supported)", command=self.add_book).pack(side="left", padx=(20, 0))
+        ttk.Button(top, text="Add Item (scan supported)", command=self.add_book).pack(side="left", padx=(20, 0))
         ttk.Button(top, text="Edit", command=self.edit_book).pack(side="left", padx=6)
         ttk.Button(top, text="Archive/Unarchive", command=self.toggle_book_active).pack(side="left", padx=6)
         ttk.Button(top, text="Delete", command=self.delete_book).pack(side="left", padx=6)
@@ -1620,9 +1620,9 @@ class App:
         )
         for col, lbl, w, anchor in [
             ("isbn", "Barcode", 140, "w"),
-            ("title", "Title", 300, "w"),
-            ("author", "Studio", 180, "w"),
-            ("category", "Format", 130, "w"),
+            ("title", "Item", 300, "w"),
+            ("author", "Brand/Details", 180, "w"),
+            ("category", "Category", 130, "w"),
             ("location", "Locations", 160, "w"),
             ("price", "Price", 90, "e"),
             ("cost", "Cost", 90, "e"),
@@ -1658,12 +1658,12 @@ class App:
 
     def add_book(self):
         """
-        Add title dialog with scan support:
+        Add item dialog with scan support:
         - scan string can include UPC/EAN barcode or price-only barcode.
         - lookup via UPCItemDB if barcode present.
         """
         dlg = tk.Toplevel(self.root)
-        dlg.title("Add Title (scan barcode/price)")
+        dlg.title("Add Item (scan barcode/price)")
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(False, False)
@@ -1675,7 +1675,7 @@ class App:
         isbn_var = tk.StringVar(value="")
         title_var = tk.StringVar(value="")
         author_var = tk.StringVar(value="")
-        cat_var = tk.StringVar(value=self.last_format_choice)
+        cat_var = tk.StringVar(value=self.last_category_choice)
         location_var = tk.StringVar(value="")
         price_var = tk.StringVar(value="0.00")
         cost_var = tk.StringVar(value="0.00")
@@ -1706,9 +1706,9 @@ class App:
                 if info:
                     title_var.set(info.get("title", ""))
                     author_var.set(info.get("studio", ""))
-                    show_status("Parsed + barcode lookup OK (title/studio filled).")
+                    show_status("Parsed + barcode lookup OK (item/brand filled).")
                 else:
-                    show_status("Parsed barcode, but lookup failed (enter title/studio manually).")
+                    show_status("Parsed barcode, but lookup failed (enter item/brand manually).")
 
         def do_lookup_barcode():
             barcode = normalize_barcode(isbn_var.get())
@@ -1722,7 +1722,7 @@ class App:
                 return
             title_var.set(info.get("title", ""))
             author_var.set(info.get("studio", ""))
-            show_status("Barcode lookup OK (title/studio filled).")
+            show_status("Barcode lookup OK (item/brand filled).")
 
         def do_parse_price_field():
             p = parse_price_from_scan(price_var.get())
@@ -1745,57 +1745,17 @@ class App:
         ttk.Button(frame, text="Lookup Barcode", command=do_lookup_barcode).grid(row=r, column=2, padx=8)
         r += 1
 
-        ttk.Label(frame, text="Title:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text="Item name:").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=title_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
-        ttk.Label(frame, text="Studio:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text="Brand/Details:").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=author_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
-        ttk.Label(frame, text="Format (optional, e.g., DVD/VHS):").grid(row=r, column=0, sticky="w", pady=4)
-        format_entry = ttk.Entry(frame, textvariable=cat_var, width=46)
-        format_entry.grid(row=r, column=1, pady=4, sticky="w")
-        format_choices = ("DVD", "Blu-ray", "VHS")
-        format_vars = {choice: tk.IntVar(value=1 if self.last_format_choice == choice else 0) for choice in format_choices}
-
-        def sync_format_choice(choice: str) -> None:
-            for name, var in format_vars.items():
-                var.set(1 if name == choice else 0)
-            cat_var.set(choice)
-            self.last_format_choice = choice
-
-        def on_format_toggle(choice: str) -> None:
-            if format_vars[choice].get():
-                sync_format_choice(choice)
-            elif cat_var.get().strip() == choice:
-                cat_var.set("")
-                self.last_format_choice = ""
-
-        format_box = ttk.Frame(frame)
-        format_box.grid(row=r, column=2, padx=8, sticky="w")
-        for choice in format_choices:
-            ttk.Checkbutton(
-                format_box,
-                text=choice,
-                variable=format_vars[choice],
-                command=lambda c=choice: on_format_toggle(c),
-            ).pack(side="left")
+        ttk.Label(frame, text="Category (optional):").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Entry(frame, textvariable=cat_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
-
-        def on_format_entry_change(*_args):
-            current = cat_var.get().strip()
-            matched = next((c for c in format_choices if c.lower() == current.lower()), None)
-            if matched:
-                if self.last_format_choice != matched:
-                    sync_format_choice(matched)
-            else:
-                for var in format_vars.values():
-                    var.set(0)
-                if current:
-                    self.last_format_choice = current
-
-        cat_var.trace_add("write", on_format_entry_change)
 
         ttk.Label(frame, text="Locations (comma-separated, optional):").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=location_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
@@ -1836,7 +1796,7 @@ class App:
             stock_s = stock_var.get().strip()
 
             if not title:
-                messagebox.showerror("Missing data", "Title is required.", parent=dlg)
+                messagebox.showerror("Missing data", "Item name is required.", parent=dlg)
                 return
 
             try:
@@ -1850,9 +1810,9 @@ class App:
                 return
 
             if cat_name:
-                self.last_format_choice = cat_name
+                self.last_category_choice = cat_name
             else:
-                self.last_format_choice = ""
+                self.last_category_choice = ""
 
             # category: auto-create if provided
             cat_id = None
@@ -1880,7 +1840,7 @@ class App:
                 else:
                     self.db.add_book(isbn, title, author, cat_id, location, price_cents, cost_cents, stock, 1)
             except sqlite3.IntegrityError as e:
-                messagebox.showerror("DB error", f"Could not add title.\n\n{e}", parent=dlg)
+                messagebox.showerror("DB error", f"Could not add item.\n\n{e}", parent=dlg)
                 return
 
             self.refresh_books()
@@ -1894,14 +1854,14 @@ class App:
                 stock_var.set("1")
                 scan_var.set("")
                 scan_entry.focus_set()
-                show_status("Added. Ready for another title.")
+                show_status("Added. Ready for another item.")
             else:
                 dlg.destroy()
 
         btns = ttk.Frame(frame)
         btns.grid(row=r, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="right")
-        add_btn = ttk.Button(btns, text="Add Title", command=on_add)
+        add_btn = ttk.Button(btns, text="Add Item", command=on_add)
         add_btn.pack(side="right", padx=8)
 
         def on_scan_enter(_event):
@@ -1917,11 +1877,11 @@ class App:
     def edit_book(self):
         bid = self._selected_book_id()
         if not bid:
-            messagebox.showerror("No selection", "Select a title.")
+            messagebox.showerror("No selection", "Select an item.")
             return
         row = self.db.get_book(bid)
         if not row:
-            messagebox.showerror("Missing", "Title not found.")
+            messagebox.showerror("Missing", "Item not found.")
             return
 
         _id, isbn, title, author, cat_id, location, price, cost, stock, active = row
@@ -1934,7 +1894,7 @@ class App:
                     break
 
         dlg = tk.Toplevel(self.root)
-        dlg.title("Edit Title")
+        dlg.title("Edit Item")
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(False, False)
@@ -1968,15 +1928,15 @@ class App:
         ttk.Entry(frame, textvariable=isbn_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
-        ttk.Label(frame, text="Title:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text="Item name:").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=title_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
-        ttk.Label(frame, text="Studio:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text="Brand/Details:").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=author_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
-        ttk.Label(frame, text="Format (optional, e.g., DVD/VHS):").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Label(frame, text="Category (optional):").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=cat_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
@@ -2017,7 +1977,7 @@ class App:
             stock_s = stock_var.get().strip()
 
             if not title_val:
-                messagebox.showerror("Missing data", "Title is required.", parent=dlg)
+                messagebox.showerror("Missing data", "Item name is required.", parent=dlg)
                 return
 
             try:
@@ -2061,26 +2021,26 @@ class App:
     def delete_book(self):
         bid = self._selected_book_id()
         if not bid:
-            messagebox.showerror("No selection", "Select a title.")
+            messagebox.showerror("No selection", "Select an item.")
             return
         row = self.db.get_book(bid)
         if not row:
-            messagebox.showerror("Missing", "Title not found.")
+            messagebox.showerror("Missing", "Item not found.")
             return
         title = row[2]
-        if not messagebox.askyesno("Delete Title", f"Delete '{title}' permanently?"):
+        if not messagebox.askyesno("Delete Item", f"Delete '{title}' permanently?"):
             return
         try:
             self.db.delete_book(bid)
         except sqlite3.IntegrityError:
-            messagebox.showerror("Delete failed", "Cannot delete a title with related sales/returns. Archive instead.")
+            messagebox.showerror("Delete failed", "Cannot delete an item with related sales/returns. Archive instead.")
             return
         self.refresh_books()
 
     def toggle_book_active(self):
         bid = self._selected_book_id()
         if not bid:
-            messagebox.showerror("No selection", "Select a title.")
+            messagebox.showerror("No selection", "Select an item.")
             return
         row = self.db.get_book(bid)
         if not row:
@@ -2092,9 +2052,9 @@ class App:
     def restock_book(self):
         bid = self._selected_book_id()
         if not bid:
-            messagebox.showerror("No selection", "Select a title.")
+            messagebox.showerror("No selection", "Select an item.")
             return
-        data = Dialog.ask_fields(self.root, "Restock Title", [("Add quantity (positive integer)", "qty")], initial={"qty": "1"})
+        data = Dialog.ask_fields(self.root, "Restock Item", [("Add quantity (positive integer)", "qty")], initial={"qty": "1"})
         if not data:
             return
         try:
@@ -2112,7 +2072,7 @@ class App:
         self.refresh_books()
 
     def export_books_csv(self):
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], title="Export Titles CSV")
+        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], title="Export Items CSV")
         if not path:
             return
         q = """
@@ -2122,7 +2082,7 @@ class App:
         """
         self.db.export_table_to_csv(
             q,
-            ["barcode", "title", "studio", "locations", "price_cents", "cost_cents", "stock_qty", "is_active"],
+            ["barcode", "item_name", "brand_details", "locations", "price_cents", "cost_cents", "stock_qty", "is_active"],
             path,
         )
         messagebox.showinfo("Exported", f"Saved:\n{path}")
@@ -2255,7 +2215,7 @@ class App:
         top = ttk.Frame(tab)
         top.pack(fill="x", padx=10, pady=10)
 
-        ttk.Label(top, text="Scan/Type Barcode or Title:").pack(side="left")
+        ttk.Label(top, text="Scan/Type Barcode or Item:").pack(side="left")
         self.scan_var = tk.StringVar()
         scan_entry = ttk.Entry(top, textvariable=self.scan_var, width=40)
         scan_entry.pack(side="left", padx=(6, 12))
@@ -2284,10 +2244,10 @@ class App:
         self.pos_customer_tree.column("email", width=260)
         self.pos_customer_tree.pack(fill="x", pady=(4, 10))
 
-        ttk.Label(left, text="Titles (double-click to add)").pack(anchor="w")
+        ttk.Label(left, text="Items (double-click to add)").pack(anchor="w")
         self.pos_books_tree = ttk.Treeview(left, columns=("isbn", "title", "price", "stock"), show="headings", height=14)
         self.pos_books_tree.heading("isbn", text="Barcode")
-        self.pos_books_tree.heading("title", text="Title")
+        self.pos_books_tree.heading("title", text="Item")
         self.pos_books_tree.heading("price", text="Price")
         self.pos_books_tree.heading("stock", text="Stock")
         self.pos_books_tree.column("isbn", width=140)
@@ -2302,14 +2262,14 @@ class App:
         ttk.Label(addrow, text="Add qty:").pack(side="left")
         self.add_qty_var = tk.StringVar(value="1")
         ttk.Entry(addrow, textvariable=self.add_qty_var, width=6).pack(side="left", padx=(6, 10))
-        ttk.Button(addrow, text="Add Selected Title", command=self.add_selected_book_to_cart).pack(side="left")
+        ttk.Button(addrow, text="Add Selected Item", command=self.add_selected_book_to_cart).pack(side="left")
 
         # Cart
         cartbox = ttk.LabelFrame(right, text="Cart (double-click Qty/LineDisc to edit)")
         cartbox.pack(fill="x", pady=(0, 10))
 
         self.cart_tree = ttk.Treeview(cartbox, columns=("title", "qty", "unit", "linedisc", "line"), show="headings", height=10)
-        self.cart_tree.heading("title", text="Title")
+        self.cart_tree.heading("title", text="Item")
         self.cart_tree.heading("qty", text="Qty")
         self.cart_tree.heading("unit", text="Unit")
         self.cart_tree.heading("linedisc", text="Line Disc")
@@ -2417,7 +2377,7 @@ class App:
             pick = rows[0]
 
         if not pick:
-            messagebox.showerror("Not found", "No matching title found.")
+            messagebox.showerror("Not found", "No matching item found.")
             return
 
         bid = int(pick[0])
@@ -2429,7 +2389,7 @@ class App:
     def add_selected_book_to_cart(self):
         sel = self.pos_books_tree.selection()
         if not sel:
-            messagebox.showerror("No selection", "Select a title.")
+            messagebox.showerror("No selection", "Select an item.")
             return
         try:
             qty = int(self.add_qty_var.get().strip())
@@ -2444,7 +2404,7 @@ class App:
     def _add_to_cart(self, book_id: int, qty: int):
         b = self.db.get_book(book_id)
         if not b:
-            raise ValueError("title missing")
+            raise ValueError("item missing")
         _id, isbn, title, author, cat_id, location, price, cost, stock, active = b
         if not int(active):
             raise ValueError("archived")
@@ -2911,11 +2871,11 @@ class App:
             self.monthly_tree.column(c, width=w, anchor=a)
         self.monthly_tree.pack(fill="both", expand=True, padx=10, pady=10)
 
-        topbooks = ttk.LabelFrame(right, text="Top titles (revenue + profit)")
+        topbooks = ttk.LabelFrame(right, text="Top items (revenue + profit)")
         topbooks.pack(fill="both", expand=True, pady=(0, 10))
         self.top_books = ttk.Treeview(topbooks, columns=("title", "units", "rev", "profit"), show="headings", height=8)
         for c, l, w, a in [
-            ("title", "Title", 260, "w"),
+            ("title", "Item", 260, "w"),
             ("units", "Units", 70, "center"),
             ("rev", "Revenue", 120, "e"),
             ("profit", "Profit", 120, "e"),
@@ -2936,11 +2896,11 @@ class App:
             self.top_customers.column(c, width=w, anchor=a)
         self.top_customers.pack(fill="both", expand=True, padx=10, pady=10)
 
-        bycat = ttk.LabelFrame(right, text="By format (revenue + profit)")
+        bycat = ttk.LabelFrame(right, text="By category (revenue + profit)")
         bycat.pack(fill="both", expand=True)
         self.by_category = ttk.Treeview(bycat, columns=("cat", "rev", "profit"), show="headings", height=6)
         for c, l, w, a in [
-            ("cat", "Format", 220, "w"),
+            ("cat", "Category", 220, "w"),
             ("rev", "Revenue", 120, "e"),
             ("profit", "Profit", 120, "e"),
         ]:
@@ -3071,7 +3031,7 @@ class App:
         ttk.Button(bbtn, text="Backup DB", command=self.backup_db).pack(side="left")
         ttk.Button(bbtn, text="Restore DB", command=self.restore_db).pack(side="left", padx=8)
 
-        cats = ttk.LabelFrame(right, text="Formats")
+        cats = ttk.LabelFrame(right, text="Categories")
         cats.pack(fill="both", expand=True, pady=(0, 10))
 
         self.cat_tree = ttk.Treeview(cats, columns=("name", "active"), show="headings", height=6)
@@ -3158,7 +3118,7 @@ class App:
             defaultextension=".db",
             filetypes=[("SQLite DB", "*.db")],
             title="Backup DB",
-            initialfile=f"dvd_vhs_backup_{today_ymd()}.db"
+            initialfile=f"inventory_backup_{today_ymd()}.db"
         )
         if not path:
             return
@@ -3188,7 +3148,7 @@ class App:
     def add_category(self):
         if not self._require_admin():
             return
-        data = Dialog.ask_fields(self.root, "Add Format", [("Name", "name")])
+        data = Dialog.ask_fields(self.root, "Add Category", [("Name", "name")])
         if not data:
             return
         try:
