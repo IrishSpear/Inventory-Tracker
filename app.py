@@ -623,6 +623,7 @@ class DB:
                     platform TEXT NOT NULL,
                     listed_price_cents INTEGER NOT NULL,
                     final_price_cents INTEGER NOT NULL,
+                    amount_paid_cents INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL CHECK(status IN ('paid','pending','partial','unpaid')),
                     note TEXT,
                     FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT
@@ -639,6 +640,10 @@ class DB:
                 cur.execute("ALTER TABLE sales ADD COLUMN platform TEXT NOT NULL DEFAULT 'In-store';")
                 conn.commit()
                 cur.execute("UPDATE sales SET platform='In-store' WHERE platform IS NULL OR platform='';")
+                conn.commit()
+
+            if "amount_paid_cents" not in self._columns(conn, "platform_sales"):
+                cur.execute("ALTER TABLE platform_sales ADD COLUMN amount_paid_cents INTEGER NOT NULL DEFAULT 0;")
                 conn.commit()
 
             if "location" not in self._columns(conn, "books"):
@@ -1069,6 +1074,7 @@ class DB:
         platform: str,
         listed_price_cents: int,
         final_price_cents: int,
+        amount_paid_cents: int,
         status: str,
         note: str,
     ) -> None:
@@ -1080,8 +1086,8 @@ class DB:
             conn.execute(
                 """
                 INSERT INTO platform_sales(
-                    created_at, book_id, platform, listed_price_cents, final_price_cents, status, note
-                ) VALUES(?,?,?,?,?,?,?);
+                    created_at, book_id, platform, listed_price_cents, final_price_cents, amount_paid_cents, status, note
+                ) VALUES(?,?,?,?,?,?,?,?);
                 """,
                 (
                     created_at,
@@ -1089,6 +1095,7 @@ class DB:
                     platform.strip(),
                     int(listed_price_cents),
                     int(final_price_cents),
+                    int(amount_paid_cents),
                     status_norm,
                     note.strip() or None,
                 ),
@@ -1110,14 +1117,51 @@ class DB:
             raise ValueError("invalid status")
         with self._connect() as conn:
             cur = conn.cursor()
+            cur.execute("SELECT book_id, amount_paid_cents FROM platform_sales WHERE id=?;", (int(sale_id),))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("sale missing")
+            book_id = int(row[0])
+            amount_paid_cents = int(row[1])
+            if status_norm == "paid":
+                amount_paid_cents = int(final_price_cents)
+            conn.execute(
+                "UPDATE platform_sales SET final_price_cents=?, amount_paid_cents=?, status=?, note=? WHERE id=?;",
+                (int(final_price_cents), int(amount_paid_cents), status_norm, note.strip() or None, int(sale_id)),
+            )
+            conn.commit()
+
+        new_availability = "pickup_ship" if status_norm == "paid" else "pending"
+        self.set_book_availability(book_id, new_availability)
+
+    def update_platform_payment(
+        self,
+        sale_id: int,
+        final_price_cents: int,
+        amount_paid_cents: int,
+        note: Optional[str] = None,
+    ) -> None:
+        if int(final_price_cents) <= 0:
+            raise ValueError("final price must be positive")
+        if int(amount_paid_cents) < 0:
+            raise ValueError("amount paid cannot be negative")
+        amount_paid_cents = min(int(amount_paid_cents), int(final_price_cents))
+        if amount_paid_cents >= int(final_price_cents):
+            status_norm = "paid"
+        elif amount_paid_cents > 0:
+            status_norm = "partial"
+        else:
+            status_norm = "pending"
+        with self._connect() as conn:
+            cur = conn.cursor()
             cur.execute("SELECT book_id FROM platform_sales WHERE id=?;", (int(sale_id),))
             row = cur.fetchone()
             if not row:
                 raise ValueError("sale missing")
             book_id = int(row[0])
             conn.execute(
-                "UPDATE platform_sales SET final_price_cents=?, status=?, note=? WHERE id=?;",
-                (int(final_price_cents), status_norm, note.strip() or None, int(sale_id)),
+                "UPDATE platform_sales SET final_price_cents=?, amount_paid_cents=?, status=?, note=COALESCE(?, note) WHERE id=?;",
+                (int(final_price_cents), int(amount_paid_cents), status_norm, note, int(sale_id)),
             )
             conn.commit()
 
@@ -1176,7 +1220,7 @@ class DB:
         self,
         statuses: Optional[List[str]] = None,
         search: str = "",
-    ) -> List[Tuple[int, str, int, str, str, int, int, str, Optional[str]]]:
+    ) -> List[Tuple[int, str, int, str, str, int, int, int, str, Optional[str]]]:
         params: List[Any] = []
         where = []
         s = (search or "").strip()
@@ -1198,6 +1242,7 @@ class DB:
                 ps.platform,
                 ps.listed_price_cents,
                 ps.final_price_cents,
+                ps.amount_paid_cents,
                 ps.status,
                 ps.note
             FROM platform_sales ps
@@ -1218,8 +1263,9 @@ class DB:
                     str(r[4]),
                     int(r[5]),
                     int(r[6]),
-                    str(r[7]),
-                    r[8],
+                    int(r[7]),
+                    str(r[8]),
+                    r[9],
                 )
                 for r in rows
             ]
@@ -1604,6 +1650,56 @@ class DB:
             """, (int(sale_id),))
             return [(int(a), b, int(c), int(d), int(e)) for (a, b, c, d, e) in cur.fetchall()]
 
+    def update_sale_payment_status(self, sale_id: int, payment_status: str) -> None:
+        status_norm = payment_status.strip().lower()
+        if status_norm not in ("paid", "unpaid", "partial"):
+            raise ValueError("invalid payment status")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM sales WHERE id=?;", (int(sale_id),))
+            if not cur.fetchone():
+                raise ValueError("sale missing")
+            conn.execute("UPDATE sales SET payment_status=? WHERE id=?;", (status_norm, int(sale_id)))
+            conn.commit()
+
+    def void_sale(self, sale_id: int) -> None:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT is_void FROM sales WHERE id=?;", (int(sale_id),))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("sale missing")
+            if int(row[0]):
+                return
+            cur.execute("SELECT COUNT(*) FROM returns WHERE sale_id=?;", (int(sale_id),))
+            if int(cur.fetchone()[0]) > 0:
+                raise ValueError("cannot void sale with returns")
+            cur.execute("SELECT book_id, quantity FROM sale_items WHERE sale_id=?;", (int(sale_id),))
+            items = cur.fetchall()
+            for book_id, qty in items:
+                cur.execute("UPDATE books SET stock_qty = stock_qty + ? WHERE id=?;", (int(qty), int(book_id)))
+            cur.execute("UPDATE sales SET is_void=1 WHERE id=?;", (int(sale_id),))
+            conn.commit()
+
+    def delete_sale(self, sale_id: int) -> None:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT is_void FROM sales WHERE id=?;", (int(sale_id),))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("sale missing")
+            is_void = int(row[0])
+            cur.execute("SELECT COUNT(*) FROM returns WHERE sale_id=?;", (int(sale_id),))
+            if int(cur.fetchone()[0]) > 0:
+                raise ValueError("delete returns first")
+            if not is_void:
+                cur.execute("SELECT book_id, quantity FROM sale_items WHERE sale_id=?;", (int(sale_id),))
+                items = cur.fetchall()
+                for book_id, qty in items:
+                    cur.execute("UPDATE books SET stock_qty = stock_qty + ? WHERE id=?;", (int(qty), int(book_id)))
+            cur.execute("DELETE FROM sales WHERE id=?;", (int(sale_id),))
+            conn.commit()
+
     def customer_history(self, customer_id: int):
         with self._connect() as conn:
             cur = conn.cursor()
@@ -1713,6 +1809,19 @@ class DB:
                 LIMIT ?;
             """, (int(limit),))
             return [(int(a), b, c, int(d), e) for (a, b, c, d, e) in cur.fetchall()]
+
+    def delete_return(self, return_id: int) -> None:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM returns WHERE id=?;", (int(return_id),))
+            if not cur.fetchone():
+                raise ValueError("return missing")
+            cur.execute("SELECT book_id, quantity FROM return_items WHERE return_id=?;", (int(return_id),))
+            items = cur.fetchall()
+            for book_id, qty in items:
+                cur.execute("UPDATE books SET stock_qty = stock_qty - ? WHERE id=?;", (int(qty), int(book_id)))
+            cur.execute("DELETE FROM returns WHERE id=?;", (int(return_id),))
+            conn.commit()
 
     def get_return_receipt(self, return_id: int):
         with self._connect() as conn:
@@ -3390,6 +3499,7 @@ class App:
             messagebox.showerror("Bad price", "Enter valid listed/final prices.")
             return
         note = self.platform_note_var.get().strip()
+        amount_paid_cents = final_price_cents if status.strip().lower() == "paid" else 0
 
         try:
             self.db.add_platform_sale(
@@ -3397,6 +3507,7 @@ class App:
                 platform=platform,
                 listed_price_cents=listed_price_cents,
                 final_price_cents=final_price_cents,
+                amount_paid_cents=amount_paid_cents,
                 status=status,
                 note=note,
             )
@@ -3420,7 +3531,7 @@ class App:
         row = next((r for r in rows if r[0] == sale_id), None)
         if not row:
             return
-        _sid, _created, _book_id, _title, platform, listed, final, status, note = row
+        _sid, _created, _book_id, _title, platform, listed, final, _paid, status, note = row
         self.platform_var.set(platform)
         self.platform_listed_var.set(f"{listed / 100:.2f}")
         self.platform_final_var.set(f"{final / 100:.2f}")
@@ -3463,6 +3574,7 @@ class App:
             platform,
             listed_price,
             final_price,
+            _paid,
             status,
             _note,
         ) in self.db.list_platform_sales():
@@ -3474,7 +3586,7 @@ class App:
                     platform,
                     cents_to_money(listed_price),
                     cents_to_money(final_price),
-                    status.title(),
+                    "Paid in full" if status == "paid" else status.title(),
                 ),
             )
 
@@ -3488,10 +3600,11 @@ class App:
         top.pack(fill="x", padx=10, pady=10)
         ttk.Button(top, text="Refresh", command=self.refresh_pending_products).pack(side="left")
         ttk.Button(top, text="Mark Selected Available", command=self.mark_pending_available).pack(side="left", padx=6)
+        ttk.Button(top, text="Payment", command=self.pending_payment).pack(side="left", padx=6)
 
         self.pending_tree = ttk.Treeview(
             tab,
-            columns=("date", "item", "platform", "listed", "final", "status"),
+            columns=("date", "item", "platform", "listed", "final", "paid", "owed", "status"),
             show="headings",
             height=18,
         )
@@ -3501,7 +3614,9 @@ class App:
             ("platform", "Platform", 120, "w"),
             ("listed", "Listed", 90, "e"),
             ("final", "Final", 90, "e"),
-            ("status", "Status", 90, "center"),
+            ("paid", "Paid", 90, "e"),
+            ("owed", "Owed", 90, "e"),
+            ("status", "Status", 110, "center"),
         ]:
             self.pending_tree.heading(col, text=label)
             self.pending_tree.column(col, width=width, anchor=anchor)
@@ -3513,10 +3628,20 @@ class App:
         for i in self.pending_tree.get_children():
             self.pending_tree.delete(i)
         rows = self.db.list_platform_sales(statuses=["pending", "partial", "unpaid"])
-        for sid, created_at, _book_id, title, platform, listed, final, status, _note in rows:
+        for sid, created_at, _book_id, title, platform, listed, final, paid, status, _note in rows:
+            owed = max(0, int(final) - int(paid))
             self.pending_tree.insert(
                 "", "end", iid=str(sid),
-                values=(created_at, title, platform, cents_to_money(listed), cents_to_money(final), status.title()),
+                values=(
+                    created_at,
+                    title,
+                    platform,
+                    cents_to_money(listed),
+                    cents_to_money(final),
+                    cents_to_money(paid),
+                    cents_to_money(owed),
+                    "Paid in full" if status == "paid" else status.title(),
+                ),
             )
 
     def mark_pending_available(self):
@@ -3529,12 +3654,99 @@ class App:
         row = next((r for r in rows if r[0] == platform_sale_id), None)
         if not row:
             return
-        _sid, _created, book_id, _title, _platform, _listed, _final, _status, _note = row
+        _sid, _created, book_id, _title, _platform, _listed, _final, _paid, _status, _note = row
         self.db.set_book_availability(book_id, "available")
         self.db.delete_platform_sale(platform_sale_id)
         self.refresh_books()
         self.refresh_pending_products()
         self.refresh_platform_sales()
+
+    def pending_payment(self):
+        sel = self.pending_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Select a pending item.")
+            return
+        platform_sale_id = int(sel[0])
+        rows = self.db.list_platform_sales()
+        row = next((r for r in rows if r[0] == platform_sale_id), None)
+        if not row:
+            return
+        _sid, _created, _book_id, title, _platform, _listed, final, paid, status, _note = row
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Record Payment")
+        dlg.geometry("420x260")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text=f"Item: {title}").pack(anchor="w", padx=12, pady=(12, 6))
+
+        form = ttk.Frame(dlg, padding=12)
+        form.pack(fill="both", expand=True)
+
+        ttk.Label(form, text="Final price ($):").grid(row=0, column=0, sticky="w", pady=6)
+        final_var = tk.StringVar(value=f"{final / 100:.2f}")
+        ttk.Entry(form, textvariable=final_var, width=12).grid(row=0, column=1, sticky="w", pady=6)
+
+        paid_mode = tk.StringVar(value="full" if status == "paid" else "part")
+        ttk.Label(form, text="Payment:").grid(row=1, column=0, sticky="w", pady=6)
+        mode_frame = ttk.Frame(form)
+        mode_frame.grid(row=1, column=1, sticky="w", pady=6)
+        ttk.Radiobutton(mode_frame, text="Paid in full", variable=paid_mode, value="full").pack(anchor="w")
+        ttk.Radiobutton(mode_frame, text="Paid in part", variable=paid_mode, value="part").pack(anchor="w")
+
+        ttk.Label(form, text="Amount paid ($):").grid(row=2, column=0, sticky="w", pady=6)
+        paid_var = tk.StringVar(value=f"{paid / 100:.2f}" if paid > 0 else "")
+        paid_entry = ttk.Entry(form, textvariable=paid_var, width=12)
+        paid_entry.grid(row=2, column=1, sticky="w", pady=6)
+
+        def toggle_paid_entry(*_args):
+            if paid_mode.get() == "full":
+                paid_entry.configure(state="disabled")
+            else:
+                paid_entry.configure(state="normal")
+
+        paid_mode.trace_add("write", toggle_paid_entry)
+        toggle_paid_entry()
+
+        def save_payment():
+            try:
+                final_price_cents = dollars_to_cents(final_var.get())
+            except Exception:
+                messagebox.showerror("Bad price", "Enter a valid final price.", parent=dlg)
+                return
+            if paid_mode.get() == "full":
+                amount_paid_cents = final_price_cents
+            else:
+                try:
+                    amount_paid_cents = dollars_to_cents(paid_var.get())
+                except Exception:
+                    messagebox.showerror("Bad amount", "Enter a valid amount paid.", parent=dlg)
+                    return
+                if amount_paid_cents <= 0 or amount_paid_cents >= final_price_cents:
+                    messagebox.showerror("Bad amount", "Amount paid must be less than final price.", parent=dlg)
+                    return
+            try:
+                self.db.update_platform_payment(
+                    platform_sale_id,
+                    final_price_cents=final_price_cents,
+                    amount_paid_cents=amount_paid_cents,
+                )
+            except Exception as e:
+                messagebox.showerror("Update failed", str(e), parent=dlg)
+                return
+            dlg.destroy()
+            self.refresh_platform_sales()
+            self.refresh_pending_products()
+            self.refresh_pickup_ship()
+            self.refresh_books()
+
+        buttons = ttk.Frame(dlg, padding=12)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(side="right")
+        ttk.Button(buttons, text="Save Payment", command=save_payment).pack(side="right", padx=8)
+
+        self.root.wait_window(dlg)
 
     # ---------------- Pickup/Ship tab ----------------
     def _build_pickup_tab(self):
@@ -3572,10 +3784,10 @@ class App:
         for i in self.pickup_tree.get_children():
             self.pickup_tree.delete(i)
         rows = self.db.list_platform_sales(statuses=["paid"])
-        for sid, created_at, _book_id, title, platform, listed, final, status, _note in rows:
+        for sid, created_at, _book_id, title, platform, listed, final, _paid, status, _note in rows:
             self.pickup_tree.insert(
                 "", "end", iid=str(sid),
-                values=(created_at, title, platform, cents_to_money(listed), cents_to_money(final), status.title()),
+                values=(created_at, title, platform, cents_to_money(listed), cents_to_money(final), "Paid in full"),
             )
 
     def mark_pickup_available(self):
@@ -3588,7 +3800,7 @@ class App:
         row = next((r for r in rows if r[0] == platform_sale_id), None)
         if not row:
             return
-        _sid, _created, book_id, _title, _platform, _listed, _final, _status, _note = row
+        _sid, _created, book_id, _title, _platform, _listed, _final, _paid, _status, _note = row
         self.db.set_book_availability(book_id, "available")
         self.db.delete_platform_sale(platform_sale_id)
         self.refresh_books()
@@ -3630,8 +3842,12 @@ class App:
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
 
         ttk.Button(top, text="Create Return (selected sale)", command=self.create_return_ui).pack(side="left")
+        ttk.Button(top, text="Update Payment Status", command=self.update_sale_payment_status_ui).pack(side="left", padx=6)
+        ttk.Button(top, text="Void Sale", command=self.void_sale_ui).pack(side="left", padx=6)
+        ttk.Button(top, text="Delete Sale", command=self.delete_sale_ui).pack(side="left", padx=6)
         ttk.Button(top, text="View Return Receipt", command=self.view_return_receipt).pack(side="left", padx=6)
         ttk.Button(top, text="Export Return PDF", command=self.export_return_pdf).pack(side="left", padx=6)
+        ttk.Button(top, text="Delete Return", command=self.delete_return_ui).pack(side="left", padx=6)
 
         body = ttk.Frame(tab)
         body.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -3683,8 +3899,9 @@ class App:
         for rid, ts, orig_rno, refund, method in self.db.list_returns(300):
             self.returns_tree.insert("", "end", iid=str(rid), values=(ts, orig_rno, cents_to_money(refund), method))
 
-    def _selected_sale_id(self) -> Optional[int]:
-        sel = self.sales_tree.selection()
+    def _selected_sale_id(self, tree: Optional[ttk.Treeview] = None) -> Optional[int]:
+        tree = tree or self.sales_tree
+        sel = tree.selection()
         return int(sel[0]) if sel else None
 
     def view_sale_receipt(self):
@@ -3734,8 +3951,72 @@ class App:
             return
         messagebox.showinfo("Saved", f"Saved:\n{path}")
 
-    def create_return_ui(self):
-        sid = self._selected_sale_id()
+    def update_sale_payment_status_ui(self, tree: Optional[ttk.Treeview] = None):
+        sid = self._selected_sale_id(tree)
+        if not sid:
+            messagebox.showerror("No selection", "Select a sale.")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Update Payment Status")
+        dlg.geometry("320x180")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Payment status:").pack(anchor="w", padx=12, pady=(12, 4))
+        status_var = tk.StringVar(value="paid")
+        ttk.Combobox(dlg, textvariable=status_var, values=["paid", "partial", "unpaid"], state="readonly").pack(anchor="w", padx=12)
+
+        def save():
+            try:
+                self.db.update_sale_payment_status(sid, status_var.get())
+            except Exception as e:
+                messagebox.showerror("Update failed", str(e), parent=dlg)
+                return
+            dlg.destroy()
+            self.refresh_sales()
+            self.refresh_reports()
+
+        btns = ttk.Frame(dlg, padding=12)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="right")
+        ttk.Button(btns, text="Save", command=save).pack(side="right", padx=8)
+        self.root.wait_window(dlg)
+
+    def void_sale_ui(self, tree: Optional[ttk.Treeview] = None):
+        sid = self._selected_sale_id(tree)
+        if not sid:
+            messagebox.showerror("No selection", "Select a sale.")
+            return
+        if not messagebox.askyesno("Void sale", "Void this sale and restock items?"):
+            return
+        try:
+            self.db.void_sale(sid)
+        except Exception as e:
+            messagebox.showerror("Void failed", str(e))
+            return
+        self.refresh_sales()
+        self.refresh_reports()
+        self.refresh_books()
+
+    def delete_sale_ui(self, tree: Optional[ttk.Treeview] = None):
+        sid = self._selected_sale_id(tree)
+        if not sid:
+            messagebox.showerror("No selection", "Select a sale.")
+            return
+        if not messagebox.askyesno("Delete sale", "Delete this sale? This cannot be undone."):
+            return
+        try:
+            self.db.delete_sale(sid)
+        except Exception as e:
+            messagebox.showerror("Delete failed", str(e))
+            return
+        self.refresh_sales()
+        self.refresh_reports()
+        self.refresh_books()
+
+    def create_return_ui(self, tree: Optional[ttk.Treeview] = None):
+        sid = self._selected_sale_id(tree)
         if not sid:
             messagebox.showerror("No selection", "Select a sale.")
             return
@@ -3805,8 +4086,9 @@ class App:
 
         self.root.wait_window(dlg)
 
-    def _selected_return_id(self) -> Optional[int]:
-        sel = self.returns_tree.selection()
+    def _selected_return_id(self, tree: Optional[ttk.Treeview] = None) -> Optional[int]:
+        tree = tree or self.returns_tree
+        sel = tree.selection()
         return int(sel[0]) if sel else None
 
     def view_return_receipt(self):
@@ -3838,6 +4120,22 @@ class App:
             messagebox.showerror("PDF error", f"{e}\n\nInstall reportlab: pip install reportlab")
             return
         messagebox.showinfo("Saved", f"Saved:\n{path}")
+
+    def delete_return_ui(self, tree: Optional[ttk.Treeview] = None):
+        rid = self._selected_return_id(tree)
+        if not rid:
+            messagebox.showerror("No selection", "Select a return.")
+            return
+        if not messagebox.askyesno("Delete return", "Delete this return? This cannot be undone."):
+            return
+        try:
+            self.db.delete_return(rid)
+        except Exception as e:
+            messagebox.showerror("Delete failed", str(e))
+            return
+        self.refresh_sales()
+        self.refresh_reports()
+        self.refresh_books()
 
     # ---------------- Reports tab ----------------
     def _build_reports_tab(self):
@@ -3882,6 +4180,62 @@ class App:
             col = (idx % 2) * 2
             ttk.Label(summary, text=f"{label}:").grid(row=row, column=col, sticky="w", padx=8, pady=2)
             ttk.Label(summary, textvariable=self.report_summary_vars[key]).grid(row=row, column=col + 1, sticky="w", padx=(0, 8), pady=2)
+
+        manage = ttk.LabelFrame(right, text="Manage Sales & Returns")
+        manage.pack(fill="both", expand=False, pady=(0, 10))
+
+        manage_body = ttk.Frame(manage)
+        manage_body.pack(fill="both", expand=True, padx=8, pady=8)
+
+        sales_frame = ttk.Frame(manage_body)
+        sales_frame.pack(fill="both", expand=True)
+        ttk.Label(sales_frame, text="Recent sales").pack(anchor="w")
+        self.reports_sales_tree = ttk.Treeview(
+            sales_frame,
+            columns=("rno", "ts", "total", "status", "void"),
+            show="headings",
+            height=6,
+        )
+        for c, l, w, a in [
+            ("rno", "Receipt", 80, "w"),
+            ("ts", "Date", 140, "w"),
+            ("total", "Total", 80, "e"),
+            ("status", "Pay", 70, "center"),
+            ("void", "Void", 60, "center"),
+        ]:
+            self.reports_sales_tree.heading(c, text=l)
+            self.reports_sales_tree.column(c, width=w, anchor=a)
+        self.reports_sales_tree.pack(fill="x", pady=(0, 6))
+
+        sales_btns = ttk.Frame(sales_frame)
+        sales_btns.pack(fill="x", pady=(0, 6))
+        ttk.Button(sales_btns, text="Create Return", command=lambda: self.create_return_ui(self.reports_sales_tree)).pack(side="left")
+        ttk.Button(sales_btns, text="Update Payment", command=lambda: self.update_sale_payment_status_ui(self.reports_sales_tree)).pack(side="left", padx=6)
+        ttk.Button(sales_btns, text="Void Sale", command=lambda: self.void_sale_ui(self.reports_sales_tree)).pack(side="left", padx=6)
+        ttk.Button(sales_btns, text="Delete Sale", command=lambda: self.delete_sale_ui(self.reports_sales_tree)).pack(side="left", padx=6)
+
+        returns_frame = ttk.Frame(manage_body)
+        returns_frame.pack(fill="both", expand=True)
+        ttk.Label(returns_frame, text="Recent returns").pack(anchor="w")
+        self.reports_returns_tree = ttk.Treeview(
+            returns_frame,
+            columns=("ts", "orig", "refund", "method"),
+            show="headings",
+            height=5,
+        )
+        for c, l, w, a in [
+            ("ts", "Date", 140, "w"),
+            ("orig", "Receipt", 90, "w"),
+            ("refund", "Refund", 90, "e"),
+            ("method", "Method", 70, "center"),
+        ]:
+            self.reports_returns_tree.heading(c, text=l)
+            self.reports_returns_tree.column(c, width=w, anchor=a)
+        self.reports_returns_tree.pack(fill="x", pady=(0, 6))
+
+        returns_btns = ttk.Frame(returns_frame)
+        returns_btns.pack(fill="x")
+        ttk.Button(returns_btns, text="Delete Return", command=lambda: self.delete_return_ui(self.reports_returns_tree)).pack(side="left")
 
         daily = ttk.LabelFrame(left, text="Daily (last 30 days) — revenue, refunds, net, tax")
         daily.pack(fill="both", expand=True, pady=(0, 10))
@@ -3976,6 +4330,24 @@ class App:
 
         for cat, rev, profit in self.db.report_by_category():
             self.by_category.insert("", "end", values=(cat, cents_to_money(rev), cents_to_money(profit)))
+
+        if hasattr(self, "reports_sales_tree"):
+            for i in self.reports_sales_tree.get_children():
+                self.reports_sales_tree.delete(i)
+            for sid, rno, ts, _platform, total, status, is_void in self.db.list_sales(50):
+                self.reports_sales_tree.insert(
+                    "", "end", iid=str(sid),
+                    values=(rno, ts, cents_to_money(total), status, "yes" if is_void else "no"),
+                )
+
+        if hasattr(self, "reports_returns_tree"):
+            for i in self.reports_returns_tree.get_children():
+                self.reports_returns_tree.delete(i)
+            for rid, ts, orig_rno, refund, method in self.db.list_returns(50):
+                self.reports_returns_tree.insert(
+                    "", "end", iid=str(rid),
+                    values=(ts, orig_rno, cents_to_money(refund), method),
+                )
 
     def export_sales_csv(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], title="Export Sales CSV")
