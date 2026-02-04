@@ -38,6 +38,15 @@ from typing import Optional, Dict, Any, List, Tuple
 
 DB_PATH = "inventory_tracker.db"
 USER_AGENT = "InventoryPOS/1.0 (+https://openai.com)"
+CONDITION_OPTIONS = ["New", "Like New", "Good", "Fair", "Poor"]
+PLATFORM_OPTIONS = ["Facebook", "eBay", "Other"]
+PLATFORM_SALE_STATUSES = ["Paid", "Pending", "Partial", "Unpaid"]
+AVAILABILITY_STATUSES = {
+    "Available": "available",
+    "Pending": "pending",
+    "Pickup/Ship": "pickup_ship",
+}
+AVAILABILITY_LABELS = {v: k for k, v in AVAILABILITY_STATUSES.items()}
 
 
 # -------------------------- Money helpers (integer cents) --------------------------
@@ -486,12 +495,14 @@ class DB:
                     height_in REAL,
                     weight_lb REAL,
                     weight_oz REAL,
+                    condition TEXT NOT NULL DEFAULT 'Good',
                     price_cents INTEGER NOT NULL DEFAULT 0,
                     cost_cents INTEGER NOT NULL DEFAULT 0,
                     stock_qty INTEGER NOT NULL DEFAULT 0,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     uploaded_facebook INTEGER NOT NULL DEFAULT 0,
-                    uploaded_ebay INTEGER NOT NULL DEFAULT 0
+                    uploaded_ebay INTEGER NOT NULL DEFAULT 0,
+                    availability_status TEXT NOT NULL DEFAULT 'available'
                 );
             """)
             conn.commit()
@@ -602,6 +613,20 @@ class DB:
                 );
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS platform_sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    book_id INTEGER NOT NULL,
+                    platform TEXT NOT NULL,
+                    listed_price_cents INTEGER NOT NULL,
+                    final_price_cents INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('paid','pending','partial','unpaid')),
+                    note TEXT,
+                    FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT
+                );
+            """)
+
             conn.commit()
 
             if "refund_tax_cents" not in self._columns(conn, "returns"):
@@ -638,6 +663,14 @@ class DB:
 
             if "uploaded_ebay" not in self._columns(conn, "books"):
                 cur.execute("ALTER TABLE books ADD COLUMN uploaded_ebay INTEGER NOT NULL DEFAULT 0;")
+                conn.commit()
+
+            if "condition" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN condition TEXT NOT NULL DEFAULT 'Good';")
+                conn.commit()
+
+            if "availability_status" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN availability_status TEXT NOT NULL DEFAULT 'available';")
                 conn.commit()
 
             # Seed settings
@@ -746,12 +779,38 @@ class DB:
         search: str = "",
         in_stock_only: bool = False,
         include_inactive: bool = False,
-        category_id: Optional[int] = None
-    ) -> List[Tuple[int, Optional[str], str, str, Optional[str], Optional[float], Optional[float], Optional[float], Optional[int], Optional[int], int, int, int, int, int, int, Optional[str]]]:
+        category_id: Optional[int] = None,
+        condition: Optional[str] = None,
+        availability_status: Optional[str] = None,
+        uploaded_platform: Optional[str] = None,
+    ) -> List[
+        Tuple[
+            int,
+            Optional[str],
+            str,
+            str,
+            Optional[str],
+            Optional[float],
+            Optional[float],
+            Optional[float],
+            Optional[int],
+            Optional[int],
+            str,
+            int,
+            int,
+            int,
+            int,
+            int,
+            int,
+            str,
+            Optional[str],
+        ]
+    ]:
         """
         Returns:
           (id, isbn, title, author, location, length_in, width_in, height_in, weight_lb, weight_oz,
-           price_cents, cost_cents, stock_qty, is_active, uploaded_facebook, uploaded_ebay, category_name)
+           condition, price_cents, cost_cents, stock_qty, is_active, uploaded_facebook, uploaded_ebay,
+           availability_status, category_name)
         """
         s = (search or "").strip()
         where = []
@@ -772,14 +831,27 @@ class DB:
             where.append("b.category_id = ?")
             params.append(int(category_id))
 
+        if condition:
+            where.append("b.condition = ?")
+            params.append(condition)
+
+        if availability_status:
+            where.append("b.availability_status = ?")
+            params.append(availability_status)
+
+        if uploaded_platform == "facebook":
+            where.append("b.uploaded_facebook = 1")
+        elif uploaded_platform == "ebay":
+            where.append("b.uploaded_ebay = 1")
+
         wsql = ("WHERE " + " AND ".join(where)) if where else ""
 
         sql = f"""
             SELECT
                 b.id, b.isbn, b.title, b.author, b.location,
                 b.length_in, b.width_in, b.height_in, b.weight_lb, b.weight_oz,
-                b.price_cents, b.cost_cents, b.stock_qty, b.is_active,
-                b.uploaded_facebook, b.uploaded_ebay,
+                b.condition, b.price_cents, b.cost_cents, b.stock_qty, b.is_active,
+                b.uploaded_facebook, b.uploaded_ebay, b.availability_status,
                 c.name
             FROM books b
             LEFT JOIN categories c ON c.id = b.category_id
@@ -803,13 +875,15 @@ class DB:
                     r[7],
                     int(r[8]) if r[8] is not None else None,
                     int(r[9]) if r[9] is not None else None,
-                    int(r[10]),
+                    str(r[10]),
                     int(r[11]),
                     int(r[12]),
                     int(r[13]),
                     int(r[14]),
                     int(r[15]),
-                    r[16]
+                    int(r[16]),
+                    str(r[17]),
+                    r[18]
                 ))
             return out
 
@@ -819,8 +893,8 @@ class DB:
             cur.execute("""
                 SELECT id, isbn, title, author, category_id, location,
                        length_in, width_in, height_in, weight_lb, weight_oz,
-                       price_cents, cost_cents, stock_qty, is_active,
-                       uploaded_facebook, uploaded_ebay
+                       condition, price_cents, cost_cents, stock_qty, is_active,
+                       uploaded_facebook, uploaded_ebay, availability_status
                 FROM books WHERE id=?;
             """, (int(book_id),))
             return cur.fetchone()
@@ -831,8 +905,8 @@ class DB:
             cur.execute("""
                 SELECT id, isbn, title, author, category_id, location,
                        length_in, width_in, height_in, weight_lb, weight_oz,
-                       price_cents, cost_cents, stock_qty, is_active,
-                       uploaded_facebook, uploaded_ebay
+                       condition, price_cents, cost_cents, stock_qty, is_active,
+                       uploaded_facebook, uploaded_ebay, availability_status
                 FROM books WHERE isbn=?;
             """, (isbn,))
             return cur.fetchone()
@@ -849,22 +923,25 @@ class DB:
         height_in,
         weight_lb,
         weight_oz,
+        condition,
         price_cents,
         cost_cents,
         stock_qty,
         is_active=1,
         uploaded_facebook=0,
-        uploaded_ebay=0
+        uploaded_ebay=0,
+        availability_status="available",
     ):
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO books(
                     isbn, title, author, category_id, location,
                     length_in, width_in, height_in, weight_lb, weight_oz,
+                    condition,
                     price_cents, cost_cents, stock_qty, is_active,
-                    uploaded_facebook, uploaded_ebay
+                    uploaded_facebook, uploaded_ebay, availability_status
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
             """, (
                 isbn or None,
                 title.strip(),
@@ -876,12 +953,14 @@ class DB:
                 height_in,
                 weight_lb,
                 weight_oz,
+                condition,
                 int(price_cents),
                 int(cost_cents),
                 int(stock_qty),
                 int(is_active),
                 int(uploaded_facebook),
                 int(uploaded_ebay),
+                availability_status,
             ))
             conn.commit()
 
@@ -898,20 +977,23 @@ class DB:
         height_in,
         weight_lb,
         weight_oz,
+        condition,
         price_cents,
         cost_cents,
         stock_qty,
         is_active,
         uploaded_facebook,
-        uploaded_ebay
+        uploaded_ebay,
+        availability_status,
     ):
         with self._connect() as conn:
             conn.execute("""
                 UPDATE books
                 SET isbn=?, title=?, author=?, category_id=?, location=?,
                     length_in=?, width_in=?, height_in=?, weight_lb=?, weight_oz=?,
+                    condition=?,
                     price_cents=?, cost_cents=?, stock_qty=?, is_active=?,
-                    uploaded_facebook=?, uploaded_ebay=?
+                    uploaded_facebook=?, uploaded_ebay=?, availability_status=?
                 WHERE id=?;
             """, (
                 isbn or None,
@@ -924,12 +1006,14 @@ class DB:
                 height_in,
                 weight_lb,
                 weight_oz,
+                condition,
                 int(price_cents),
                 int(cost_cents),
                 int(stock_qty),
                 int(is_active),
                 int(uploaded_facebook),
                 int(uploaded_ebay),
+                availability_status,
                 int(book_id),
             ))
             conn.commit()
@@ -961,6 +1045,128 @@ class DB:
         with self._connect() as conn:
             conn.execute("UPDATE books SET is_active=? WHERE id=?;", (int(active), int(book_id)))
             conn.commit()
+
+    def set_book_availability(self, book_id: int, availability_status: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE books SET availability_status=? WHERE id=?;",
+                (availability_status, int(book_id)),
+            )
+            conn.commit()
+
+    # -------- Platform sales --------
+    def add_platform_sale(
+        self,
+        book_id: int,
+        platform: str,
+        listed_price_cents: int,
+        final_price_cents: int,
+        status: str,
+        note: str,
+    ) -> None:
+        created_at = now_ts()
+        status_norm = status.strip().lower()
+        if status_norm not in ("paid", "pending", "partial", "unpaid"):
+            raise ValueError("invalid status")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO platform_sales(
+                    created_at, book_id, platform, listed_price_cents, final_price_cents, status, note
+                ) VALUES(?,?,?,?,?,?,?);
+                """,
+                (
+                    created_at,
+                    int(book_id),
+                    platform.strip(),
+                    int(listed_price_cents),
+                    int(final_price_cents),
+                    status_norm,
+                    note.strip() or None,
+                ),
+            )
+            conn.commit()
+
+        new_availability = "pickup_ship" if status_norm == "paid" else "pending"
+        self.set_book_availability(book_id, new_availability)
+
+    def update_platform_sale(
+        self,
+        sale_id: int,
+        final_price_cents: int,
+        status: str,
+        note: str,
+    ) -> None:
+        status_norm = status.strip().lower()
+        if status_norm not in ("paid", "pending", "partial", "unpaid"):
+            raise ValueError("invalid status")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT book_id FROM platform_sales WHERE id=?;", (int(sale_id),))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("sale missing")
+            book_id = int(row[0])
+            conn.execute(
+                "UPDATE platform_sales SET final_price_cents=?, status=?, note=? WHERE id=?;",
+                (int(final_price_cents), status_norm, note.strip() or None, int(sale_id)),
+            )
+            conn.commit()
+
+        new_availability = "pickup_ship" if status_norm == "paid" else "pending"
+        self.set_book_availability(book_id, new_availability)
+
+    def list_platform_sales(
+        self,
+        statuses: Optional[List[str]] = None,
+        search: str = "",
+    ) -> List[Tuple[int, str, int, str, str, int, int, str, Optional[str]]]:
+        params: List[Any] = []
+        where = []
+        s = (search or "").strip()
+        if s:
+            where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
+            like = f"%{s}%"
+            params += [like, like, like]
+        if statuses:
+            st = [st.strip().lower() for st in statuses]
+            where.append("ps.status IN ({})".format(",".join("?" for _ in st)))
+            params += st
+        wsql = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = f"""
+            SELECT
+                ps.id,
+                ps.created_at,
+                ps.book_id,
+                b.title,
+                ps.platform,
+                ps.listed_price_cents,
+                ps.final_price_cents,
+                ps.status,
+                ps.note
+            FROM platform_sales ps
+            JOIN books b ON b.id = ps.book_id
+            {wsql}
+            ORDER BY ps.created_at DESC;
+        """
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            return [
+                (
+                    int(r[0]),
+                    r[1],
+                    int(r[2]),
+                    str(r[3]),
+                    str(r[4]),
+                    int(r[5]),
+                    int(r[6]),
+                    str(r[7]),
+                    r[8],
+                )
+                for r in rows
+            ]
 
     # -------- Customers --------
     def list_customers(self, search: str = "", include_inactive: bool = False):
@@ -1740,8 +1946,9 @@ class App:
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
         self._build_books_tab()
-        self._build_customers_tab()
         self._build_pos_tab()
+        self._build_pending_tab()
+        self._build_pickup_tab()
         self._build_sales_tab()
         self._build_reports_tab()
         self._build_admin_tab()
@@ -1778,7 +1985,7 @@ class App:
     # ---------------- Items tab ----------------
     def _build_books_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Inventory")
+        self.notebook.add(tab, text="Dashboard")
         self.books_tab = tab
 
         top = ttk.Frame(tab)
@@ -1787,6 +1994,9 @@ class App:
         self.book_search = tk.StringVar()
         self.book_instock = tk.IntVar(value=0)
         self.book_inactive = tk.IntVar(value=0)
+        self.book_condition_filter = tk.StringVar(value="All")
+        self.book_availability_filter = tk.StringVar(value="Available")
+        self.book_uploaded_filter = tk.StringVar(value="Any")
 
         ttk.Label(top, text="Search:").pack(side="left")
         e = ttk.Entry(top, textvariable=self.book_search, width=28)
@@ -1796,12 +2006,75 @@ class App:
         ttk.Checkbutton(top, text="In stock only", variable=self.book_instock, command=self.refresh_books).pack(side="left")
         ttk.Checkbutton(top, text="Include archived", variable=self.book_inactive, command=self.refresh_books).pack(side="left", padx=10)
 
-        ttk.Button(top, text="Add Item (scan supported)", command=self.add_book).pack(side="left", padx=(20, 0))
+        ttk.Label(top, text="Condition:").pack(side="left", padx=(10, 0))
+        condition_combo = ttk.Combobox(
+            top,
+            textvariable=self.book_condition_filter,
+            values=["All"] + CONDITION_OPTIONS,
+            width=10,
+            state="readonly",
+        )
+        condition_combo.pack(side="left", padx=(6, 12))
+        condition_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_books())
+
+        ttk.Label(top, text="Availability:").pack(side="left")
+        availability_combo = ttk.Combobox(
+            top,
+            textvariable=self.book_availability_filter,
+            values=["Available", "Pending", "Pickup/Ship", "All"],
+            width=12,
+            state="readonly",
+        )
+        availability_combo.pack(side="left", padx=(6, 12))
+        availability_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_books())
+
+        ttk.Label(top, text="Uploaded to:").pack(side="left")
+        uploaded_combo = ttk.Combobox(
+            top,
+            textvariable=self.book_uploaded_filter,
+            values=["Any", "Facebook", "eBay"],
+            width=10,
+            state="readonly",
+        )
+        uploaded_combo.pack(side="left", padx=(6, 12))
+        uploaded_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_books())
+
+        ttk.Button(top, text="Add Item (scan supported)", command=self.add_book).pack(side="left", padx=(10, 0))
         ttk.Button(top, text="Edit", command=self.edit_book).pack(side="left", padx=6)
         ttk.Button(top, text="Archive/Unarchive", command=self.toggle_book_active).pack(side="left", padx=6)
         ttk.Button(top, text="Delete", command=self.delete_book).pack(side="left", padx=6)
         ttk.Button(top, text="Restock", command=self.restock_book).pack(side="left", padx=6)
         ttk.Button(top, text="Export CSV", command=self.export_books_csv).pack(side="right")
+
+        customize = ttk.LabelFrame(tab, text="Customize view")
+        customize.pack(fill="x", padx=10, pady=(0, 8))
+
+        self.book_column_vars = {
+            "location": tk.IntVar(value=1),
+            "dimensions": tk.IntVar(value=1),
+            "weight": tk.IntVar(value=1),
+            "cost": tk.IntVar(value=1),
+            "condition": tk.IntVar(value=1),
+            "availability": tk.IntVar(value=1),
+            "facebook": tk.IntVar(value=1),
+            "ebay": tk.IntVar(value=1),
+        }
+        for key, label in [
+            ("condition", "Condition"),
+            ("availability", "Availability"),
+            ("location", "Locations"),
+            ("dimensions", "Dimensions"),
+            ("weight", "Weight"),
+            ("cost", "Cost"),
+            ("facebook", "Facebook"),
+            ("ebay", "eBay"),
+        ]:
+            ttk.Checkbutton(
+                customize,
+                text=label,
+                variable=self.book_column_vars[key],
+                command=self._apply_book_column_visibility,
+            ).pack(side="left", padx=6)
 
         self.books_tree = ttk.Treeview(
             tab,
@@ -1810,6 +2083,8 @@ class App:
                 "title",
                 "author",
                 "category",
+                "condition",
+                "availability",
                 "location",
                 "dimensions",
                 "weight",
@@ -1828,6 +2103,8 @@ class App:
             ("title", "Item", 300, "w"),
             ("author", "Brand/Details", 180, "w"),
             ("category", "Category", 130, "w"),
+            ("condition", "Condition", 110, "w"),
+            ("availability", "Availability", 120, "w"),
             ("location", "Locations", 160, "w"),
             ("dimensions", "Dimensions (LxWxH)", 160, "w"),
             ("weight", "Weight (lb/oz)", 120, "w"),
@@ -1843,6 +2120,7 @@ class App:
 
         self.books_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.books_tree.bind("<Double-1>", lambda _e: self.edit_book())
+        self._apply_book_column_visibility()
 
     def refresh_books(self):
         for i in self.books_tree.get_children():
@@ -1852,6 +2130,15 @@ class App:
             search=self.book_search.get(),
             in_stock_only=bool(self.book_instock.get()),
             include_inactive=bool(self.book_inactive.get()),
+            condition=None if self.book_condition_filter.get() == "All" else self.book_condition_filter.get(),
+            availability_status=None
+            if self.book_availability_filter.get() == "All"
+            else AVAILABILITY_STATUSES.get(self.book_availability_filter.get(), "available"),
+            uploaded_platform={
+                "Any": None,
+                "Facebook": "facebook",
+                "eBay": "ebay",
+            }.get(self.book_uploaded_filter.get()),
         )
         for (
             bid,
@@ -1864,12 +2151,14 @@ class App:
             height_in,
             weight_lb,
             weight_oz,
+            condition,
             price,
             cost,
             stock,
             active,
             uploaded_facebook,
             uploaded_ebay,
+            availability_status,
             catname,
         ) in rows:
             self.books_tree.insert(
@@ -1879,6 +2168,8 @@ class App:
                     title,
                     author,
                     catname or "",
+                    condition or "",
+                    AVAILABILITY_LABELS.get(availability_status, availability_status),
                     location or "",
                     format_dimensions(length_in, width_in, height_in),
                     format_weight(weight_lb, weight_oz),
@@ -1892,6 +2183,31 @@ class App:
             )
 
         self._refresh_pos_books()
+
+    def _apply_book_column_visibility(self):
+        if not hasattr(self, "books_tree"):
+            return
+        base_cols = [
+            "isbn",
+            "title",
+            "author",
+            "category",
+            "price",
+            "stock",
+            "active",
+        ]
+        optional_cols = [
+            ("condition", self.book_column_vars["condition"]),
+            ("availability", self.book_column_vars["availability"]),
+            ("location", self.book_column_vars["location"]),
+            ("dimensions", self.book_column_vars["dimensions"]),
+            ("weight", self.book_column_vars["weight"]),
+            ("cost", self.book_column_vars["cost"]),
+            ("facebook", self.book_column_vars["facebook"]),
+            ("ebay", self.book_column_vars["ebay"]),
+        ]
+        cols = base_cols + [name for name, var in optional_cols if var.get()]
+        self.books_tree["displaycolumns"] = cols
 
     def _selected_book_id(self) -> Optional[int]:
         sel = self.books_tree.selection()
@@ -1918,6 +2234,7 @@ class App:
         author_var = tk.StringVar(value="")
         cat_var = tk.StringVar(value=self.last_category_choice)
         location_var = tk.StringVar(value="")
+        condition_var = tk.StringVar(value="Good")
         length_var = tk.StringVar(value="")
         width_var = tk.StringVar(value="")
         height_var = tk.StringVar(value="")
@@ -2024,6 +2341,12 @@ class App:
         cat_combo.bind("<KeyRelease>", update_category_autocomplete)
         r += 1
 
+        ttk.Label(frame, text="Condition:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=condition_var, values=CONDITION_OPTIONS, width=44, state="readonly").grid(
+            row=r, column=1, pady=4, sticky="w"
+        )
+        r += 1
+
         ttk.Label(frame, text="Locations (comma-separated, optional):").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=location_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
@@ -2085,6 +2408,7 @@ class App:
             author = author_var.get().strip()
             cat_name = cat_var.get().strip()
             location = normalize_locations(location_var.get())
+            condition = condition_var.get().strip() or "Good"
             length_raw = length_var.get()
             width_raw = width_var.get()
             height_raw = height_var.get()
@@ -2122,6 +2446,10 @@ class App:
             else:
                 self.last_category_choice = ""
 
+            if condition not in CONDITION_OPTIONS:
+                messagebox.showerror("Bad condition", "Choose a valid condition.", parent=dlg)
+                return
+
             # category: auto-create if provided
             cat_id = None
             if cat_name:
@@ -2155,12 +2483,14 @@ class App:
                             height_in,
                             weight_lb,
                             weight_oz,
+                            condition,
                             price_cents,
                             cost_cents,
                             stock,
                             1,
                             uploaded_facebook,
                             uploaded_ebay,
+                            "available",
                         )
                 else:
                     self.db.add_book(
@@ -2174,12 +2504,14 @@ class App:
                         height_in,
                         weight_lb,
                         weight_oz,
+                        condition,
                         price_cents,
                         cost_cents,
                         stock,
                         1,
                         uploaded_facebook,
                         uploaded_ebay,
+                        "available",
                     )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not add item.\n\n{e}", parent=dlg)
@@ -2200,6 +2532,7 @@ class App:
                 height_var.set("")
                 weight_lb_var.set("")
                 weight_oz_var.set("")
+                condition_var.set("Good")
                 uploaded_facebook_var.set(0)
                 uploaded_ebay_var.set(0)
                 scan_entry.focus_set()
@@ -2245,12 +2578,14 @@ class App:
             height_in,
             weight_lb,
             weight_oz,
+            condition,
             price,
             cost,
             stock,
             active,
             uploaded_facebook,
             uploaded_ebay,
+            availability_status,
         ) = row
 
         catname = ""
@@ -2274,6 +2609,8 @@ class App:
         author_var = tk.StringVar(value=author)
         cat_var = tk.StringVar(value=catname)
         location_var = tk.StringVar(value=location or "")
+        condition_var = tk.StringVar(value=condition or "Good")
+        availability_var = tk.StringVar(value=AVAILABILITY_LABELS.get(availability_status, "Available"))
         length_var = tk.StringVar(value="" if length_in is None else str(length_in))
         width_var = tk.StringVar(value="" if width_in is None else str(width_in))
         height_var = tk.StringVar(value="" if height_in is None else str(height_in))
@@ -2331,6 +2668,22 @@ class App:
                 cat_combo["values"] = categories
 
         cat_combo.bind("<KeyRelease>", update_category_autocomplete)
+        r += 1
+
+        ttk.Label(frame, text="Condition:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Combobox(frame, textvariable=condition_var, values=CONDITION_OPTIONS, width=44, state="readonly").grid(
+            row=r, column=1, pady=4, sticky="w"
+        )
+        r += 1
+
+        ttk.Label(frame, text="Availability:").grid(row=r, column=0, sticky="w", pady=4)
+        ttk.Combobox(
+            frame,
+            textvariable=availability_var,
+            values=["Available", "Pending", "Pickup/Ship"],
+            width=44,
+            state="readonly",
+        ).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
         ttk.Label(frame, text="Locations (comma-separated, optional):").grid(row=r, column=0, sticky="w", pady=4)
@@ -2392,6 +2745,8 @@ class App:
             author_val = author_var.get().strip()
             cat_name = cat_var.get().strip()
             location_val = normalize_locations(location_var.get())
+            condition_val = condition_var.get().strip() or "Good"
+            availability_val = AVAILABILITY_STATUSES.get(availability_var.get(), "available")
             length_raw = length_var.get()
             width_raw = width_var.get()
             height_raw = height_var.get()
@@ -2405,6 +2760,9 @@ class App:
 
             if not title_val:
                 messagebox.showerror("Missing data", "Item name is required.", parent=dlg)
+                return
+            if condition_val not in CONDITION_OPTIONS:
+                messagebox.showerror("Bad condition", "Choose a valid condition.", parent=dlg)
                 return
 
             try:
@@ -2447,12 +2805,14 @@ class App:
                     height_val,
                     weight_lb_val,
                     weight_oz_val,
+                    condition_val,
                     price2,
                     cost2,
                     stock2,
                     active2,
                     uploaded_facebook_val,
                     uploaded_ebay_val,
+                    availability_val,
                 )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not update.\n\n{e}", parent=dlg)
@@ -2497,7 +2857,7 @@ class App:
         row = self.db.get_book(bid)
         if not row:
             return
-        active = int(row[14])
+        active = int(row[15])
         self.db.set_book_active(bid, 0 if active else 1)
         self.refresh_books()
 
@@ -2538,12 +2898,14 @@ class App:
                 height_in,
                 weight_lb,
                 weight_oz,
+                condition,
                 price_cents,
                 cost_cents,
                 stock_qty,
                 is_active,
                 uploaded_facebook,
-                uploaded_ebay
+                uploaded_ebay,
+                availability_status
             FROM books
             ORDER BY title;
         """
@@ -2559,12 +2921,14 @@ class App:
                 "height_in",
                 "weight_lb",
                 "weight_oz",
+                "condition",
                 "price_cents",
                 "cost_cents",
                 "stock_qty",
                 "is_active",
                 "uploaded_facebook",
                 "uploaded_ebay",
+                "availability_status",
             ],
             path,
         )
@@ -2692,431 +3056,372 @@ class App:
     # ---------------- POS tab ----------------
     def _build_pos_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="POS")
+        self.notebook.add(tab, text="Platform Sales")
         self.pos_tab = tab
 
         top = ttk.Frame(tab)
         top.pack(fill="x", padx=10, pady=10)
 
-        ttk.Label(top, text="Scan/Type Barcode or Item:").pack(side="left")
-        self.scan_var = tk.StringVar()
-        scan_entry = ttk.Entry(top, textvariable=self.scan_var, width=40)
-        scan_entry.pack(side="left", padx=(6, 12))
-        scan_entry.bind("<Return>", lambda _e: self.scan_add())
-
-        ttk.Label(top, text="Qty:").pack(side="left")
-        self.scan_qty_var = tk.StringVar(value="1")
-        ttk.Entry(top, textvariable=self.scan_qty_var, width=6).pack(side="left", padx=(6, 12))
-
-        ttk.Button(top, text="Add from scan", command=self.scan_add).pack(side="left")
-        ttk.Button(top, text="Clear cart", command=self.clear_cart).pack(side="left", padx=8)
+        ttk.Label(top, text="Search inventory:").pack(side="left")
+        self.platform_search_var = tk.StringVar()
+        search_entry = ttk.Entry(top, textvariable=self.platform_search_var, width=36)
+        search_entry.pack(side="left", padx=(6, 12))
+        search_entry.bind("<KeyRelease>", lambda _e: self._refresh_pos_books())
+        ttk.Button(top, text="Refresh", command=self._refresh_pos_books).pack(side="left")
 
         body = ttk.Frame(tab)
         body.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         left = ttk.Frame(body)
-        left.pack(side="left", fill="both", expand=False, padx=(0, 10))
+        left.pack(side="left", fill="both", expand=True, padx=(0, 10))
         right = ttk.Frame(body)
         right.pack(side="left", fill="both", expand=True)
 
-        ttk.Label(left, text="Customer (required)").pack(anchor="w")
-        self.pos_customer_tree = ttk.Treeview(left, columns=("name", "email"), show="headings", height=8)
-        self.pos_customer_tree.heading("name", text="Name")
-        self.pos_customer_tree.heading("email", text="Email")
-        self.pos_customer_tree.column("name", width=220)
-        self.pos_customer_tree.column("email", width=260)
-        self.pos_customer_tree.pack(fill="x", pady=(4, 10))
-
-        ttk.Label(left, text="Items (double-click to add)").pack(anchor="w")
-        self.pos_books_tree = ttk.Treeview(left, columns=("isbn", "title", "price", "stock"), show="headings", height=14)
+        ttk.Label(left, text="Available inventory (double-click to autofill pricing)").pack(anchor="w")
+        self.pos_books_tree = ttk.Treeview(
+            left,
+            columns=("isbn", "title", "condition", "price", "stock"),
+            show="headings",
+            height=18,
+        )
         self.pos_books_tree.heading("isbn", text="Barcode")
         self.pos_books_tree.heading("title", text="Item")
-        self.pos_books_tree.heading("price", text="Price")
+        self.pos_books_tree.heading("condition", text="Condition")
+        self.pos_books_tree.heading("price", text="Listed Price")
         self.pos_books_tree.heading("stock", text="Stock")
         self.pos_books_tree.column("isbn", width=140)
         self.pos_books_tree.column("title", width=280)
-        self.pos_books_tree.column("price", width=90, anchor="e")
+        self.pos_books_tree.column("condition", width=100)
+        self.pos_books_tree.column("price", width=110, anchor="e")
         self.pos_books_tree.column("stock", width=60, anchor="center")
-        self.pos_books_tree.pack(fill="x", pady=(4, 6))
-        self.pos_books_tree.bind("<Double-1>", lambda _e: self.add_selected_book_to_cart())
+        self.pos_books_tree.pack(fill="both", expand=True, pady=(4, 6))
+        self.pos_books_tree.bind("<Double-1>", lambda _e: self._prefill_platform_price())
 
-        addrow = ttk.Frame(left)
-        addrow.pack(fill="x", pady=(0, 10))
-        ttk.Label(addrow, text="Add qty:").pack(side="left")
-        self.add_qty_var = tk.StringVar(value="1")
-        ttk.Entry(addrow, textvariable=self.add_qty_var, width=6).pack(side="left", padx=(6, 10))
-        ttk.Button(addrow, text="Add Selected Item", command=self.add_selected_book_to_cart).pack(side="left")
+        form = ttk.LabelFrame(right, text="Log platform sale")
+        form.pack(fill="x", pady=(0, 10))
 
-        # Cart
-        cartbox = ttk.LabelFrame(right, text="Cart (double-click Qty/LineDisc to edit)")
-        cartbox.pack(fill="x", pady=(0, 10))
+        self.platform_var = tk.StringVar(value=PLATFORM_OPTIONS[0])
+        self.platform_listed_var = tk.StringVar(value="0.00")
+        self.platform_final_var = tk.StringVar(value="0.00")
+        self.platform_status_var = tk.StringVar(value="Pending")
+        self.platform_note_var = tk.StringVar(value="")
 
-        self.cart_tree = ttk.Treeview(cartbox, columns=("title", "qty", "unit", "linedisc", "line"), show="headings", height=10)
-        self.cart_tree.heading("title", text="Item")
-        self.cart_tree.heading("qty", text="Qty")
-        self.cart_tree.heading("unit", text="Unit")
-        self.cart_tree.heading("linedisc", text="Line Disc")
-        self.cart_tree.heading("line", text="Line Total")
-        self.cart_tree.column("title", width=360)
-        self.cart_tree.column("qty", width=60, anchor="center")
-        self.cart_tree.column("unit", width=90, anchor="e")
-        self.cart_tree.column("linedisc", width=90, anchor="e")
-        self.cart_tree.column("line", width=110, anchor="e")
-        self.cart_tree.pack(fill="x", padx=10, pady=10)
-        self.cart_tree.bind("<Double-1>", self._cart_inline_edit)
-
-        btnrow = ttk.Frame(cartbox)
-        btnrow.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(btnrow, text="Remove Selected", command=self.remove_selected_cart).pack(side="left")
-        ttk.Button(btnrow, text="+1", command=lambda: self.bump_cart_qty(1)).pack(side="left", padx=6)
-        ttk.Button(btnrow, text="-1", command=lambda: self.bump_cart_qty(-1)).pack(side="left", padx=6)
-
-        # Totals / checkout
-        totals = ttk.LabelFrame(right, text="Checkout")
-        totals.pack(fill="x")
-
-        row1 = ttk.Frame(totals)
+        row1 = ttk.Frame(form)
         row1.pack(fill="x", padx=10, pady=8)
+        ttk.Label(row1, text="Platform:").pack(side="left")
+        ttk.Combobox(row1, textvariable=self.platform_var, values=PLATFORM_OPTIONS, width=14).pack(
+            side="left", padx=(6, 12)
+        )
+        ttk.Label(row1, text="Status:").pack(side="left")
+        ttk.Combobox(
+            row1, textvariable=self.platform_status_var, values=PLATFORM_SALE_STATUSES, width=12, state="readonly"
+        ).pack(side="left", padx=(6, 12))
 
-        ttk.Label(row1, text="Order discount ($):").pack(side="left")
-        self.order_disc_var = tk.StringVar(value="0.00")
-        ttk.Entry(row1, textvariable=self.order_disc_var, width=10).pack(side="left", padx=(6, 12))
-
-        ttk.Label(row1, text="Coupon code:").pack(side="left")
-        self.coupon_var = tk.StringVar(value="")
-        ttk.Entry(row1, textvariable=self.coupon_var, width=14).pack(side="left", padx=(6, 12))
-        ttk.Button(row1, text="Apply", command=self.refresh_cart).pack(side="left")
-
-        ttk.Label(row1, text="Tax rate:").pack(side="left", padx=(12, 0))
-        self.tax_var = tk.StringVar(value=self.db.get_setting("tax_rate_default") or "0.00")
-        ttk.Entry(row1, textvariable=self.tax_var, width=10).pack(side="left", padx=(6, 0))
-
-        row2 = ttk.Frame(totals)
+        row2 = ttk.Frame(form)
         row2.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(row2, text="Listed price ($):").pack(side="left")
+        ttk.Entry(row2, textvariable=self.platform_listed_var, width=12).pack(side="left", padx=(6, 12))
+        ttk.Label(row2, text="Final price ($):").pack(side="left")
+        ttk.Entry(row2, textvariable=self.platform_final_var, width=12).pack(side="left", padx=(6, 12))
 
-        ttk.Label(row2, text="Payment method:").pack(side="left")
-        self.pay_method = tk.StringVar(value="cash")
-        ttk.Combobox(row2, textvariable=self.pay_method, values=["cash", "card", "other"], width=10, state="readonly").pack(side="left", padx=(6, 12))
-
-        ttk.Label(row2, text="Payment status:").pack(side="left")
-        self.pay_status = tk.StringVar(value="paid")
-        ttk.Combobox(row2, textvariable=self.pay_status, values=["paid", "unpaid", "partial"], width=10, state="readonly").pack(side="left", padx=(6, 12))
-
-        ttk.Label(row2, text="Note:").pack(side="left")
-        self.note_var = tk.StringVar(value="")
-        ttk.Entry(row2, textvariable=self.note_var, width=30).pack(side="left", padx=(6, 0))
-
-        row3 = ttk.Frame(totals)
+        row3 = ttk.Frame(form)
         row3.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(row3, text="Note:").pack(side="left")
+        ttk.Entry(row3, textvariable=self.platform_note_var, width=36).pack(side="left", padx=(6, 12))
+        ttk.Button(row3, text="Log Sale", command=self.log_platform_sale).pack(side="right")
 
-        self.sub_lbl = ttk.Label(row3, text="Subtotal: $0.00")
-        self.sub_lbl.pack(side="left", padx=(0, 14))
-        self.tax_lbl = ttk.Label(row3, text="Tax: $0.00")
-        self.tax_lbl.pack(side="left", padx=(0, 14))
-        self.total_lbl = ttk.Label(row3, text="Total: $0.00")
-        self.total_lbl.pack(side="left", padx=(0, 14))
-        ttk.Button(row3, text="Finalize Sale", command=self.finalize_sale).pack(side="right")
+        sales = ttk.LabelFrame(right, text="Recent platform sales")
+        sales.pack(fill="both", expand=True)
+        self.platform_sales_tree = ttk.Treeview(
+            sales,
+            columns=("date", "item", "platform", "listed", "final", "status"),
+            show="headings",
+            height=10,
+        )
+        for col, label, width, anchor in [
+            ("date", "Date", 140, "w"),
+            ("item", "Item", 220, "w"),
+            ("platform", "Platform", 110, "w"),
+            ("listed", "Listed", 90, "e"),
+            ("final", "Final", 90, "e"),
+            ("status", "Status", 90, "center"),
+        ]:
+            self.platform_sales_tree.heading(col, text=label)
+            self.platform_sales_tree.column(col, width=width, anchor=anchor)
+        self.platform_sales_tree.pack(fill="both", expand=True, padx=10, pady=10)
+        self.platform_sales_tree.bind("<<TreeviewSelect>>", lambda _e: self._load_selected_platform_sale())
 
-    def _refresh_pos_customers(self):
-        if not hasattr(self, "pos_customer_tree"):
-            return
-        for i in self.pos_customer_tree.get_children():
-            self.pos_customer_tree.delete(i)
-        for cid, name, email, active in self.db.list_customers("", include_inactive=False):
-            self.pos_customer_tree.insert("", "end", iid=str(cid), values=(name, email))
+        action_row = ttk.Frame(sales)
+        action_row.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(action_row, text="Update Selected Sale", command=self.update_platform_sale).pack(side="left")
+        ttk.Button(action_row, text="Refresh", command=self.refresh_platform_sales).pack(side="left", padx=6)
 
     def _refresh_pos_books(self):
         if not hasattr(self, "pos_books_tree"):
             return
         for i in self.pos_books_tree.get_children():
             self.pos_books_tree.delete(i)
+        rows = self.db.list_books(
+            self.platform_search_var.get(),
+            in_stock_only=False,
+            include_inactive=False,
+            availability_status="available",
+        )
         for (
             bid,
             isbn,
             title,
-            author,
-            location,
+            _author,
+            _location,
             _length_in,
             _width_in,
             _height_in,
             _weight_lb,
             _weight_oz,
+            condition,
             price,
-            cost,
+            _cost,
             stock,
-            active,
+            _active,
             _uploaded_facebook,
             _uploaded_ebay,
-            cat,
-        ) in self.db.list_books("", in_stock_only=False, include_inactive=False):
-            self.pos_books_tree.insert("", "end", iid=str(bid), values=(isbn or "", title, cents_to_money(price), stock))
+            _availability_status,
+            _cat,
+        ) in rows:
+            self.pos_books_tree.insert(
+                "", "end", iid=str(bid), values=(isbn or "", title, condition or "", cents_to_money(price), stock)
+            )
 
-    def scan_add(self):
-        text = self.scan_var.get().strip()
-        if not text:
-            return
-        try:
-            qty_raw = self.scan_qty_var.get().strip()
-            qty = int(qty_raw) if qty_raw else 1
-            if qty <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("Bad qty", "Scan qty must be a positive integer.")
-            return
-
-        # Try barcode exact first
-        barcode = normalize_barcode(text)
-        rows = self.db.list_books(search=barcode or text, in_stock_only=False, include_inactive=False)
-
-        pick = None
-        if barcode:
-            for r in rows:
-                if (r[1] or "") == barcode:
-                    pick = r
-                    break
-        if pick is None and rows:
-            pick = rows[0]
-
-        if not pick:
-            messagebox.showerror("Not found", "No matching item found.")
-            return
-
-        bid = int(pick[0])
-        self._add_to_cart(bid, qty)
-        self.scan_var.set("")
-        self.scan_qty_var.set("1")
-        self.refresh_cart()
-
-    def add_selected_book_to_cart(self):
+    def _prefill_platform_price(self):
         sel = self.pos_books_tree.selection()
         if not sel:
-            messagebox.showerror("No selection", "Select an item.")
-            return
-        try:
-            qty = int(self.add_qty_var.get().strip())
-            if qty <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("Bad qty", "Quantity must be a positive integer.")
-            return
-        self._add_to_cart(int(sel[0]), qty)
-        self.refresh_cart()
-
-    def _add_to_cart(self, book_id: int, qty: int):
-        b = self.db.get_book(book_id)
-        if not b:
-            raise ValueError("item missing")
-        (
-            _id,
-            isbn,
-            title,
-            author,
-            cat_id,
-            location,
-            _length_in,
-            _width_in,
-            _height_in,
-            _weight_lb,
-            _weight_oz,
-            price,
-            cost,
-            stock,
-            active,
-            _uploaded_facebook,
-            _uploaded_ebay,
-        ) = b
-        if not int(active):
-            raise ValueError("archived")
-        if book_id in self.cart:
-            self.cart[book_id]["qty"] += qty
-        else:
-            self.cart[book_id] = {
-                "title": title,
-                "qty": qty,
-                "unit_price": int(price),
-                "unit_cost": int(cost),
-                "line_disc": 0
-            }
-
-    def clear_cart(self):
-        self.cart.clear()
-        self.refresh_cart()
-
-    def remove_selected_cart(self):
-        sel = self.cart_tree.selection()
-        if not sel:
             return
         bid = int(sel[0])
-        if bid in self.cart:
-            del self.cart[bid]
-        self.refresh_cart()
+        row = self.db.get_book(bid)
+        if not row:
+            return
+        price_cents = int(row[12])
+        price_text = f"{price_cents / 100:.2f}"
+        self.platform_listed_var.set(price_text)
+        self.platform_final_var.set(price_text)
 
-    def bump_cart_qty(self, delta: int):
-        sel = self.cart_tree.selection()
+    def log_platform_sale(self):
+        sel = self.pos_books_tree.selection()
         if not sel:
+            messagebox.showerror("No selection", "Select an available item first.")
             return
-        bid = int(sel[0])
-        if bid not in self.cart:
+        book_id = int(sel[0])
+        platform = self.platform_var.get().strip()
+        if not platform:
+            messagebox.showerror("Missing data", "Platform is required.")
             return
-        self.cart[bid]["qty"] += int(delta)
-        if self.cart[bid]["qty"] <= 0:
-            del self.cart[bid]
-        self.refresh_cart()
-
-    def _cart_inline_edit(self, event):
-        region = self.cart_tree.identify("region", event.x, event.y)
-        if region != "cell":
-            return
-        row_id = self.cart_tree.identify_row(event.y)
-        col = self.cart_tree.identify_column(event.x)
-        if not row_id:
-            return
-        if col not in ("#2", "#4"):
-            return
-
-        x, y, w, h = self.cart_tree.bbox(row_id, col)
-        colname = self.cart_tree["columns"][int(col[1:]) - 1]
-        old = self.cart_tree.set(row_id, colname)
-
-        entry = ttk.Entry(self.cart_tree)
-        entry.place(x=x, y=y, width=w, height=h)
-        entry.insert(0, old.replace("$", "").strip())
-        entry.focus_set()
-
-        def commit(_e=None):
-            val = entry.get().strip()
-            entry.destroy()
-            bid = int(row_id)
-            if bid not in self.cart:
-                return
-            try:
-                if col == "#2":
-                    q = int(val)
-                    if q <= 0:
-                        raise ValueError
-                    self.cart[bid]["qty"] = q
-                else:
-                    disc = dollars_to_cents(val) if val else 0
-                    line_sub = self.cart[bid]["unit_price"] * self.cart[bid]["qty"]
-                    if disc < 0 or disc > line_sub:
-                        raise ValueError
-                    self.cart[bid]["line_disc"] = disc
-            except Exception:
-                messagebox.showerror("Invalid", "Bad value.")
-            self.refresh_cart()
-
-        entry.bind("<Return>", commit)
-        entry.bind("<FocusOut>", commit)
-
-    def refresh_cart(self):
-        for i in self.cart_tree.get_children():
-            self.cart_tree.delete(i)
-
-        coupon = self.db.get_coupon_by_code(self.coupon_var.get())
-        coupon_code = coupon["code"] if coupon else None
-
+        status = self.platform_status_var.get().strip()
         try:
-            order_disc = dollars_to_cents(self.order_disc_var.get()) if self.order_disc_var.get().strip() else 0
+            listed_price_cents = dollars_to_cents(self.platform_listed_var.get())
+            final_price_cents = dollars_to_cents(self.platform_final_var.get())
         except Exception:
-            order_disc = 0
+            messagebox.showerror("Bad price", "Enter valid listed/final prices.")
+            return
+        note = self.platform_note_var.get().strip()
 
         try:
-            tax_rate = float(self.tax_var.get().strip())
-            if tax_rate < 0:
-                raise ValueError
-        except Exception:
-            tax_rate = 0.0
-
-        item_total = 0
-        for bid, it in self.cart.items():
-            qty = int(it["qty"])
-            unit = int(it["unit_price"])
-            line_sub = unit * qty
-            line_disc = min(max(int(it.get("line_disc", 0)), 0), line_sub)
-            line_total = line_sub - line_disc
-            item_total += line_total
-
-            self.cart_tree.insert("", "end", iid=str(bid), values=(
-                it["title"], qty, cents_to_money(unit), cents_to_money(line_disc), cents_to_money(line_total)
-            ))
-
-        coupon_disc = 0
-        if coupon_code and item_total > 0:
-            if coupon["kind"] == "percent":
-                coupon_disc = int(round(item_total * (coupon["value"] / 100.0)))
-            else:
-                coupon_disc = int(round(coupon["value"] * 100.0)) if coupon["value"] < 1000 else int(coupon["value"])
-            coupon_disc = min(coupon_disc, item_total)
-
-        total_discount = min(order_disc + coupon_disc, item_total)
-        sub_after = item_total - total_discount
-        tax_cents = int(round(sub_after * tax_rate))
-        total = sub_after + tax_cents
-
-        self.sub_lbl.configure(text=f"Subtotal: {cents_to_money(sub_after)}")
-        self.tax_lbl.configure(text=f"Tax: {cents_to_money(tax_cents)}")
-        self.total_lbl.configure(text=f"Total: {cents_to_money(total)}")
-
-    def finalize_sale(self):
-        csel = self.pos_customer_tree.selection()
-        if not csel:
-            messagebox.showerror("Customer required", "Select a customer.")
-            return
-        if not self.cart:
-            messagebox.showerror("Cart empty", "Add items first.")
-            return
-
-        customer_id = int(csel[0])
-
-        cart_items = []
-        for bid, it in self.cart.items():
-            cart_items.append({
-                "book_id": int(bid),
-                "qty": int(it["qty"]),
-                "unit_price_cents": int(it["unit_price"]),
-                "unit_cost_cents": int(it["unit_cost"]),
-                "line_discount_cents": int(it.get("line_disc", 0)),
-            })
-
-        try:
-            tax_rate = float(self.tax_var.get().strip())
-            if tax_rate < 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("Bad tax rate", "Tax rate must be non-negative (e.g. 0.07).")
-            return
-
-        try:
-            order_disc = dollars_to_cents(self.order_disc_var.get()) if self.order_disc_var.get().strip() else 0
-        except Exception:
-            messagebox.showerror("Bad discount", "Order discount must be a valid dollar amount.")
-            return
-
-        coupon_code = self.coupon_var.get().strip().upper() or None
-        pay_method = self.pay_method.get()
-        pay_status = self.pay_status.get()
-        note = self.note_var.get().strip()
-
-        try:
-            sale_id, receipt_no, receipt_text = self.db.create_sale(
-                customer_id=customer_id,
-                cart_items=cart_items,
-                tax_rate=tax_rate,
-                order_discount_cents=order_disc,
-                coupon_code=coupon_code,
-                payment_method=pay_method,
-                payment_status=pay_status,
-                note=note
+            self.db.add_platform_sale(
+                book_id=book_id,
+                platform=platform,
+                listed_price_cents=listed_price_cents,
+                final_price_cents=final_price_cents,
+                status=status,
+                note=note,
             )
         except Exception as e:
-            messagebox.showerror("Sale failed", str(e))
+            messagebox.showerror("Log failed", str(e))
             return
 
-        self.clear_cart()
-        self.refresh_sales()
-        self.refresh_books()     # stock changed
-        self.refresh_reports()
-        Dialog.show_text(self.root, f"Receipt {receipt_no}", receipt_text)
+        self.platform_note_var.set("")
+        self.platform_status_var.set("Pending")
+        self.refresh_books()
+        self.refresh_platform_sales()
+        self.refresh_pending_products()
+        self.refresh_pickup_ship()
+
+    def _load_selected_platform_sale(self):
+        sel = self.platform_sales_tree.selection()
+        if not sel:
+            return
+        sale_id = int(sel[0])
+        rows = self.db.list_platform_sales()
+        row = next((r for r in rows if r[0] == sale_id), None)
+        if not row:
+            return
+        _sid, _created, _book_id, _title, platform, listed, final, status, note = row
+        self.platform_var.set(platform)
+        self.platform_listed_var.set(f"{listed / 100:.2f}")
+        self.platform_final_var.set(f"{final / 100:.2f}")
+        self.platform_status_var.set(status.title())
+        self.platform_note_var.set(note or "")
+
+    def update_platform_sale(self):
+        sel = self.platform_sales_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Select a platform sale to update.")
+            return
+        sale_id = int(sel[0])
+        try:
+            final_price_cents = dollars_to_cents(self.platform_final_var.get())
+        except Exception:
+            messagebox.showerror("Bad price", "Enter a valid final price.")
+            return
+        status = self.platform_status_var.get().strip()
+        note = self.platform_note_var.get().strip()
+        try:
+            self.db.update_platform_sale(sale_id, final_price_cents, status, note)
+        except Exception as e:
+            messagebox.showerror("Update failed", str(e))
+            return
+        self.refresh_books()
+        self.refresh_platform_sales()
+        self.refresh_pending_products()
+        self.refresh_pickup_ship()
+
+    def refresh_platform_sales(self):
+        if not hasattr(self, "platform_sales_tree"):
+            return
+        for i in self.platform_sales_tree.get_children():
+            self.platform_sales_tree.delete(i)
+        for (
+            sid,
+            created_at,
+            _book_id,
+            title,
+            platform,
+            listed_price,
+            final_price,
+            status,
+            _note,
+        ) in self.db.list_platform_sales():
+            self.platform_sales_tree.insert(
+                "", "end", iid=str(sid),
+                values=(
+                    created_at,
+                    title,
+                    platform,
+                    cents_to_money(listed_price),
+                    cents_to_money(final_price),
+                    status.title(),
+                ),
+            )
+
+    # ---------------- Pending products tab ----------------
+    def _build_pending_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Pending Products")
+        self.pending_tab = tab
+
+        top = ttk.Frame(tab)
+        top.pack(fill="x", padx=10, pady=10)
+        ttk.Button(top, text="Refresh", command=self.refresh_pending_products).pack(side="left")
+        ttk.Button(top, text="Mark Selected Available", command=self.mark_pending_available).pack(side="left", padx=6)
+
+        self.pending_tree = ttk.Treeview(
+            tab,
+            columns=("date", "item", "platform", "listed", "final", "status"),
+            show="headings",
+            height=18,
+        )
+        for col, label, width, anchor in [
+            ("date", "Date", 140, "w"),
+            ("item", "Item", 280, "w"),
+            ("platform", "Platform", 120, "w"),
+            ("listed", "Listed", 90, "e"),
+            ("final", "Final", 90, "e"),
+            ("status", "Status", 90, "center"),
+        ]:
+            self.pending_tree.heading(col, text=label)
+            self.pending_tree.column(col, width=width, anchor=anchor)
+        self.pending_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def refresh_pending_products(self):
+        if not hasattr(self, "pending_tree"):
+            return
+        for i in self.pending_tree.get_children():
+            self.pending_tree.delete(i)
+        rows = self.db.list_platform_sales(statuses=["pending", "partial", "unpaid"])
+        for sid, created_at, _book_id, title, platform, listed, final, status, _note in rows:
+            self.pending_tree.insert(
+                "", "end", iid=str(sid),
+                values=(created_at, title, platform, cents_to_money(listed), cents_to_money(final), status.title()),
+            )
+
+    def mark_pending_available(self):
+        sel = self.pending_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Select a pending item.")
+            return
+        sale_id = int(sel[0])
+        rows = self.db.list_platform_sales()
+        row = next((r for r in rows if r[0] == sale_id), None)
+        if not row:
+            return
+        _sid, _created, book_id, _title, _platform, _listed, _final, _status, _note = row
+        self.db.set_book_availability(book_id, "available")
+        self.refresh_books()
+        self.refresh_pending_products()
+
+    # ---------------- Pickup/Ship tab ----------------
+    def _build_pickup_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Pickup/Ship")
+        self.pickup_tab = tab
+
+        top = ttk.Frame(tab)
+        top.pack(fill="x", padx=10, pady=10)
+        ttk.Button(top, text="Refresh", command=self.refresh_pickup_ship).pack(side="left")
+        ttk.Button(top, text="Mark Selected Available", command=self.mark_pickup_available).pack(side="left", padx=6)
+
+        self.pickup_tree = ttk.Treeview(
+            tab,
+            columns=("date", "item", "platform", "listed", "final", "status"),
+            show="headings",
+            height=18,
+        )
+        for col, label, width, anchor in [
+            ("date", "Date", 140, "w"),
+            ("item", "Item", 280, "w"),
+            ("platform", "Platform", 120, "w"),
+            ("listed", "Listed", 90, "e"),
+            ("final", "Final", 90, "e"),
+            ("status", "Status", 90, "center"),
+        ]:
+            self.pickup_tree.heading(col, text=label)
+            self.pickup_tree.column(col, width=width, anchor=anchor)
+        self.pickup_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def refresh_pickup_ship(self):
+        if not hasattr(self, "pickup_tree"):
+            return
+        for i in self.pickup_tree.get_children():
+            self.pickup_tree.delete(i)
+        rows = self.db.list_platform_sales(statuses=["paid"])
+        for sid, created_at, _book_id, title, platform, listed, final, status, _note in rows:
+            self.pickup_tree.insert(
+                "", "end", iid=str(sid),
+                values=(created_at, title, platform, cents_to_money(listed), cents_to_money(final), status.title()),
+            )
+
+    def mark_pickup_available(self):
+        sel = self.pickup_tree.selection()
+        if not sel:
+            messagebox.showerror("No selection", "Select a pickup/ship item.")
+            return
+        sale_id = int(sel[0])
+        rows = self.db.list_platform_sales()
+        row = next((r for r in rows if r[0] == sale_id), None)
+        if not row:
+            return
+        _sid, _created, book_id, _title, _platform, _listed, _final, _status, _note = row
+        self.db.set_book_availability(book_id, "available")
+        self.refresh_books()
+        self.refresh_pickup_ship()
 
     # ---------------- Sales & Returns tab ----------------
     def _build_sales_tab(self):
@@ -3629,7 +3934,8 @@ class App:
         self.db.set_setting("receipt_footer", self.set_footer.get().strip())
         self.db.set_setting("receipt_prefix", self.set_prefix.get().strip() or "R")
         self.db.set_setting("tax_rate_default", self.set_taxdef.get().strip() or "0.00")
-        self.tax_var.set(self.db.get_setting("tax_rate_default") or "0.00")
+        if hasattr(self, "tax_var"):
+            self.tax_var.set(self.db.get_setting("tax_rate_default") or "0.00")
         messagebox.showinfo("Saved", "Settings saved.")
 
     def backup_db(self):
@@ -3820,8 +4126,9 @@ class App:
     # ---------------- Global refresh ----------------
     def refresh_all(self):
         self.refresh_books()
-        self.refresh_customers()
-        self.refresh_cart()
+        self.refresh_platform_sales()
+        self.refresh_pending_products()
+        self.refresh_pickup_ship()
         self.refresh_sales()
         self.refresh_reports()
         self.refresh_admin_lists()
