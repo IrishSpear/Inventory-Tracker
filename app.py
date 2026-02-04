@@ -489,7 +489,9 @@ class DB:
                     price_cents INTEGER NOT NULL DEFAULT 0,
                     cost_cents INTEGER NOT NULL DEFAULT 0,
                     stock_qty INTEGER NOT NULL DEFAULT 0,
-                    is_active INTEGER NOT NULL DEFAULT 1
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    uploaded_facebook INTEGER NOT NULL DEFAULT 0,
+                    uploaded_ebay INTEGER NOT NULL DEFAULT 0
                 );
             """)
             conn.commit()
@@ -630,6 +632,14 @@ class DB:
                 cur.execute("ALTER TABLE books ADD COLUMN weight_oz REAL;")
                 conn.commit()
 
+            if "uploaded_facebook" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN uploaded_facebook INTEGER NOT NULL DEFAULT 0;")
+                conn.commit()
+
+            if "uploaded_ebay" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN uploaded_ebay INTEGER NOT NULL DEFAULT 0;")
+                conn.commit()
+
             # Seed settings
             defaults = {
                 "store_name": "My Resale Store",
@@ -737,11 +747,11 @@ class DB:
         in_stock_only: bool = False,
         include_inactive: bool = False,
         category_id: Optional[int] = None
-    ) -> List[Tuple[int, Optional[str], str, str, Optional[str], Optional[float], Optional[float], Optional[float], Optional[int], Optional[int], int, int, int, int, Optional[str]]]:
+    ) -> List[Tuple[int, Optional[str], str, str, Optional[str], Optional[float], Optional[float], Optional[float], Optional[int], Optional[int], int, int, int, int, int, int, Optional[str]]]:
         """
         Returns:
           (id, isbn, title, author, location, length_in, width_in, height_in, weight_lb, weight_oz,
-           price_cents, cost_cents, stock_qty, is_active, category_name)
+           price_cents, cost_cents, stock_qty, is_active, uploaded_facebook, uploaded_ebay, category_name)
         """
         s = (search or "").strip()
         where = []
@@ -769,6 +779,7 @@ class DB:
                 b.id, b.isbn, b.title, b.author, b.location,
                 b.length_in, b.width_in, b.height_in, b.weight_lb, b.weight_oz,
                 b.price_cents, b.cost_cents, b.stock_qty, b.is_active,
+                b.uploaded_facebook, b.uploaded_ebay,
                 c.name
             FROM books b
             LEFT JOIN categories c ON c.id = b.category_id
@@ -796,7 +807,9 @@ class DB:
                     int(r[11]),
                     int(r[12]),
                     int(r[13]),
-                    r[14]
+                    int(r[14]),
+                    int(r[15]),
+                    r[16]
                 ))
             return out
 
@@ -806,7 +819,8 @@ class DB:
             cur.execute("""
                 SELECT id, isbn, title, author, category_id, location,
                        length_in, width_in, height_in, weight_lb, weight_oz,
-                       price_cents, cost_cents, stock_qty, is_active
+                       price_cents, cost_cents, stock_qty, is_active,
+                       uploaded_facebook, uploaded_ebay
                 FROM books WHERE id=?;
             """, (int(book_id),))
             return cur.fetchone()
@@ -817,7 +831,8 @@ class DB:
             cur.execute("""
                 SELECT id, isbn, title, author, category_id, location,
                        length_in, width_in, height_in, weight_lb, weight_oz,
-                       price_cents, cost_cents, stock_qty, is_active
+                       price_cents, cost_cents, stock_qty, is_active,
+                       uploaded_facebook, uploaded_ebay
                 FROM books WHERE isbn=?;
             """, (isbn,))
             return cur.fetchone()
@@ -837,16 +852,19 @@ class DB:
         price_cents,
         cost_cents,
         stock_qty,
-        is_active=1
+        is_active=1,
+        uploaded_facebook=0,
+        uploaded_ebay=0
     ):
         with self._connect() as conn:
             conn.execute("""
                 INSERT INTO books(
                     isbn, title, author, category_id, location,
                     length_in, width_in, height_in, weight_lb, weight_oz,
-                    price_cents, cost_cents, stock_qty, is_active
+                    price_cents, cost_cents, stock_qty, is_active,
+                    uploaded_facebook, uploaded_ebay
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
             """, (
                 isbn or None,
                 title.strip(),
@@ -862,6 +880,8 @@ class DB:
                 int(cost_cents),
                 int(stock_qty),
                 int(is_active),
+                int(uploaded_facebook),
+                int(uploaded_ebay),
             ))
             conn.commit()
 
@@ -881,14 +901,17 @@ class DB:
         price_cents,
         cost_cents,
         stock_qty,
-        is_active
+        is_active,
+        uploaded_facebook,
+        uploaded_ebay
     ):
         with self._connect() as conn:
             conn.execute("""
                 UPDATE books
                 SET isbn=?, title=?, author=?, category_id=?, location=?,
                     length_in=?, width_in=?, height_in=?, weight_lb=?, weight_oz=?,
-                    price_cents=?, cost_cents=?, stock_qty=?, is_active=?
+                    price_cents=?, cost_cents=?, stock_qty=?, is_active=?,
+                    uploaded_facebook=?, uploaded_ebay=?
                 WHERE id=?;
             """, (
                 isbn or None,
@@ -905,6 +928,8 @@ class DB:
                 int(cost_cents),
                 int(stock_qty),
                 int(is_active),
+                int(uploaded_facebook),
+                int(uploaded_ebay),
                 int(book_id),
             ))
             conn.commit()
@@ -1780,7 +1805,21 @@ class App:
 
         self.books_tree = ttk.Treeview(
             tab,
-            columns=("isbn", "title", "author", "category", "location", "dimensions", "weight", "price", "cost", "stock", "active"),
+            columns=(
+                "isbn",
+                "title",
+                "author",
+                "category",
+                "location",
+                "dimensions",
+                "weight",
+                "price",
+                "cost",
+                "stock",
+                "active",
+                "facebook",
+                "ebay",
+            ),
             show="headings",
             height=18,
         )
@@ -1796,6 +1835,8 @@ class App:
             ("cost", "Cost", 90, "e"),
             ("stock", "Stock", 70, "center"),
             ("active", "Active", 70, "center"),
+            ("facebook", "Facebook", 80, "center"),
+            ("ebay", "eBay", 70, "center"),
         ]:
             self.books_tree.heading(col, text=lbl)
             self.books_tree.column(col, width=w, anchor=anchor)
@@ -1827,6 +1868,8 @@ class App:
             cost,
             stock,
             active,
+            uploaded_facebook,
+            uploaded_ebay,
             catname,
         ) in rows:
             self.books_tree.insert(
@@ -1843,6 +1886,8 @@ class App:
                     cents_to_money(cost),
                     stock,
                     "yes" if active else "no",
+                    "yes" if uploaded_facebook else "no",
+                    "yes" if uploaded_ebay else "no",
                 )
             )
 
@@ -1881,6 +1926,8 @@ class App:
         price_var = tk.StringVar(value="0.00")
         cost_var = tk.StringVar(value="0.00")
         stock_var = tk.StringVar(value="1")
+        uploaded_facebook_var = tk.IntVar(value=0)
+        uploaded_ebay_var = tk.IntVar(value=0)
         add_another_var = tk.IntVar(value=0)
 
         def show_status(msg: str):
@@ -1955,7 +2002,26 @@ class App:
         r += 1
 
         ttk.Label(frame, text="Category (optional):").grid(row=r, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=cat_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        categories = [name for (_cid, name, _active) in self.db.list_categories(include_inactive=True)]
+        cat_combo = ttk.Combobox(frame, textvariable=cat_var, values=categories, width=44)
+        cat_combo.grid(row=r, column=1, pady=4, sticky="w")
+
+        def update_category_autocomplete(_event=None):
+            value = cat_var.get()
+            if not value:
+                cat_combo["values"] = categories
+                return
+            matches = [c for c in categories if c.lower().startswith(value.lower())]
+            if matches:
+                cat_combo["values"] = matches
+                if matches[0].lower() != value.lower():
+                    cat_combo.set(matches[0])
+                    cat_combo.icursor(len(value))
+                    cat_combo.select_range(len(value), "end")
+            else:
+                cat_combo["values"] = categories
+
+        cat_combo.bind("<KeyRelease>", update_category_autocomplete)
         r += 1
 
         ttk.Label(frame, text="Locations (comma-separated, optional):").grid(row=r, column=0, sticky="w", pady=4)
@@ -1997,6 +2063,13 @@ class App:
         ttk.Entry(frame, textvariable=stock_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
+        upload_frame = ttk.Frame(frame)
+        upload_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Label(upload_frame, text="Uploaded to:").pack(side="left")
+        ttk.Checkbutton(upload_frame, text="Facebook", variable=uploaded_facebook_var).pack(side="left", padx=(10, 0))
+        ttk.Checkbutton(upload_frame, text="eBay", variable=uploaded_ebay_var).pack(side="left", padx=(10, 0))
+        r += 1
+
         ttk.Checkbutton(frame, text="Add another after save", variable=add_another_var).grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
@@ -2020,6 +2093,8 @@ class App:
             price_s = price_var.get().strip()
             cost_s = cost_var.get().strip()
             stock_s = stock_var.get().strip()
+            uploaded_facebook = 1 if uploaded_facebook_var.get() else 0
+            uploaded_ebay = 1 if uploaded_ebay_var.get() else 0
 
             if not title:
                 messagebox.showerror("Missing data", "Item name is required.", parent=dlg)
@@ -2084,6 +2159,8 @@ class App:
                             cost_cents,
                             stock,
                             1,
+                            uploaded_facebook,
+                            uploaded_ebay,
                         )
                 else:
                     self.db.add_book(
@@ -2101,6 +2178,8 @@ class App:
                         cost_cents,
                         stock,
                         1,
+                        uploaded_facebook,
+                        uploaded_ebay,
                     )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not add item.\n\n{e}", parent=dlg)
@@ -2121,6 +2200,8 @@ class App:
                 height_var.set("")
                 weight_lb_var.set("")
                 weight_oz_var.set("")
+                uploaded_facebook_var.set(0)
+                uploaded_ebay_var.set(0)
                 scan_entry.focus_set()
                 show_status("Added. Ready for another item.")
             else:
@@ -2168,6 +2249,8 @@ class App:
             cost,
             stock,
             active,
+            uploaded_facebook,
+            uploaded_ebay,
         ) = row
 
         catname = ""
@@ -2200,6 +2283,8 @@ class App:
         cost_var = tk.StringVar(value=f"{int(cost)/100:.2f}")
         stock_var = tk.StringVar(value=str(stock))
         active_var = tk.IntVar(value=1 if int(active) else 0)
+        uploaded_facebook_var = tk.IntVar(value=1 if int(uploaded_facebook) else 0)
+        uploaded_ebay_var = tk.IntVar(value=1 if int(uploaded_ebay) else 0)
 
         def show_status(msg: str):
             status_lbl.configure(text=msg)
@@ -2226,7 +2311,26 @@ class App:
         r += 1
 
         ttk.Label(frame, text="Category (optional):").grid(row=r, column=0, sticky="w", pady=4)
-        ttk.Entry(frame, textvariable=cat_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
+        categories = [name for (_cid, name, _active) in self.db.list_categories(include_inactive=True)]
+        cat_combo = ttk.Combobox(frame, textvariable=cat_var, values=categories, width=44)
+        cat_combo.grid(row=r, column=1, pady=4, sticky="w")
+
+        def update_category_autocomplete(_event=None):
+            value = cat_var.get()
+            if not value:
+                cat_combo["values"] = categories
+                return
+            matches = [c for c in categories if c.lower().startswith(value.lower())]
+            if matches:
+                cat_combo["values"] = matches
+                if matches[0].lower() != value.lower():
+                    cat_combo.set(matches[0])
+                    cat_combo.icursor(len(value))
+                    cat_combo.select_range(len(value), "end")
+            else:
+                cat_combo["values"] = categories
+
+        cat_combo.bind("<KeyRelease>", update_category_autocomplete)
         r += 1
 
         ttk.Label(frame, text="Locations (comma-separated, optional):").grid(row=r, column=0, sticky="w", pady=4)
@@ -2268,6 +2372,13 @@ class App:
         ttk.Entry(frame, textvariable=stock_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
+        upload_frame = ttk.Frame(frame)
+        upload_frame.grid(row=r, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Label(upload_frame, text="Uploaded to:").pack(side="left")
+        ttk.Checkbutton(upload_frame, text="Facebook", variable=uploaded_facebook_var).pack(side="left", padx=(10, 0))
+        ttk.Checkbutton(upload_frame, text="eBay", variable=uploaded_ebay_var).pack(side="left", padx=(10, 0))
+        r += 1
+
         ttk.Checkbutton(frame, text="Active", variable=active_var).grid(row=r, column=1, sticky="w", pady=4)
         r += 1
 
@@ -2289,6 +2400,8 @@ class App:
             price_s = price_var.get().strip()
             cost_s = cost_var.get().strip()
             stock_s = stock_var.get().strip()
+            uploaded_facebook_val = 1 if uploaded_facebook_var.get() else 0
+            uploaded_ebay_val = 1 if uploaded_ebay_var.get() else 0
 
             if not title_val:
                 messagebox.showerror("Missing data", "Item name is required.", parent=dlg)
@@ -2338,6 +2451,8 @@ class App:
                     cost2,
                     stock2,
                     active2,
+                    uploaded_facebook_val,
+                    uploaded_ebay_val,
                 )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not update.\n\n{e}", parent=dlg)
@@ -2426,7 +2541,9 @@ class App:
                 price_cents,
                 cost_cents,
                 stock_qty,
-                is_active
+                is_active,
+                uploaded_facebook,
+                uploaded_ebay
             FROM books
             ORDER BY title;
         """
@@ -2446,6 +2563,8 @@ class App:
                 "cost_cents",
                 "stock_qty",
                 "is_active",
+                "uploaded_facebook",
+                "uploaded_ebay",
             ],
             path,
         )
@@ -2726,6 +2845,8 @@ class App:
             cost,
             stock,
             active,
+            _uploaded_facebook,
+            _uploaded_ebay,
             cat,
         ) in self.db.list_books("", in_stock_only=False, include_inactive=False):
             self.pos_books_tree.insert("", "end", iid=str(bid), values=(isbn or "", title, cents_to_money(price), stock))
@@ -2801,6 +2922,8 @@ class App:
             cost,
             stock,
             active,
+            _uploaded_facebook,
+            _uploaded_ebay,
         ) = b
         if not int(active):
             raise ValueError("archived")
