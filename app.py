@@ -1101,7 +1101,7 @@ class DB:
                     price_cents, cost_cents, stock_qty, reorder_point, reorder_qty, is_active,
                     uploaded_facebook, uploaded_ebay, availability_status
                 )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
             """, (
                 barcode or None,
                 isbn or None,
