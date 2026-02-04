@@ -68,6 +68,40 @@ def now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def format_measure(value: Optional[float]) -> str:
+    if value is None:
+        return ""
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:g}"
+
+
+def format_dimensions(length: Optional[float], width: Optional[float], height: Optional[float]) -> str:
+    if length is None and width is None and height is None:
+        return ""
+    if length is not None and width is not None and height is not None:
+        return f"{format_measure(length)} x {format_measure(width)} x {format_measure(height)} in"
+    parts = []
+    if length is not None:
+        parts.append(f"L {format_measure(length)}")
+    if width is not None:
+        parts.append(f"W {format_measure(width)}")
+    if height is not None:
+        parts.append(f"H {format_measure(height)}")
+    return f"{' '.join(parts)} in"
+
+
+def format_weight(weight_lb: Optional[int], weight_oz: Optional[int]) -> str:
+    if weight_lb is None and weight_oz is None:
+        return ""
+    parts = []
+    if weight_lb is not None:
+        parts.append(f"{int(weight_lb)} lb")
+    if weight_oz is not None:
+        parts.append(f"{int(weight_oz)} oz")
+    return " ".join(parts)
+
+
 def today_ymd() -> str:
     return date.today().strftime("%Y-%m-%d")
 
@@ -196,6 +230,32 @@ def parse_locations(raw: Optional[str]) -> List[str]:
         seen.add(key)
         locations.append(loc)
     return locations
+
+
+def parse_optional_float(raw: str, field: str) -> Optional[float]:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        value = float(s)
+    except ValueError as exc:
+        raise ValueError(f"Invalid {field}.") from exc
+    if value < 0:
+        raise ValueError(f"{field} cannot be negative.")
+    return value
+
+
+def parse_optional_int(raw: str, field: str) -> Optional[int]:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    try:
+        value = int(s)
+    except ValueError as exc:
+        raise ValueError(f"Invalid {field}.") from exc
+    if value < 0:
+        raise ValueError(f"{field} cannot be negative.")
+    return value
 
 
 def normalize_locations(raw: Optional[str]) -> Optional[str]:
@@ -421,6 +481,11 @@ class DB:
                     author TEXT NOT NULL,
                     category_id INTEGER,
                     location TEXT,
+                    length_in REAL,
+                    width_in REAL,
+                    height_in REAL,
+                    weight_lb INTEGER,
+                    weight_oz INTEGER,
                     price_cents INTEGER NOT NULL DEFAULT 0,
                     cost_cents INTEGER NOT NULL DEFAULT 0,
                     stock_qty INTEGER NOT NULL DEFAULT 0,
@@ -545,6 +610,26 @@ class DB:
                 cur.execute("ALTER TABLE books ADD COLUMN location TEXT;")
                 conn.commit()
 
+            if "length_in" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN length_in REAL;")
+                conn.commit()
+
+            if "width_in" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN width_in REAL;")
+                conn.commit()
+
+            if "height_in" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN height_in REAL;")
+                conn.commit()
+
+            if "weight_lb" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN weight_lb INTEGER;")
+                conn.commit()
+
+            if "weight_oz" not in self._columns(conn, "books"):
+                cur.execute("ALTER TABLE books ADD COLUMN weight_oz INTEGER;")
+                conn.commit()
+
             # Seed settings
             defaults = {
                 "store_name": "My Resale Store",
@@ -652,10 +737,11 @@ class DB:
         in_stock_only: bool = False,
         include_inactive: bool = False,
         category_id: Optional[int] = None
-    ) -> List[Tuple[int, Optional[str], str, str, Optional[str], int, int, int, int, Optional[str]]]:
+    ) -> List[Tuple[int, Optional[str], str, str, Optional[str], Optional[float], Optional[float], Optional[float], Optional[int], Optional[int], int, int, int, int, Optional[str]]]:
         """
         Returns:
-          (id, isbn, title, author, location, price_cents, cost_cents, stock_qty, is_active, category_name)
+          (id, isbn, title, author, location, length_in, width_in, height_in, weight_lb, weight_oz,
+           price_cents, cost_cents, stock_qty, is_active, category_name)
         """
         s = (search or "").strip()
         where = []
@@ -681,6 +767,7 @@ class DB:
         sql = f"""
             SELECT
                 b.id, b.isbn, b.title, b.author, b.location,
+                b.length_in, b.width_in, b.height_in, b.weight_lb, b.weight_oz,
                 b.price_cents, b.cost_cents, b.stock_qty, b.is_active,
                 c.name
             FROM books b
@@ -700,11 +787,16 @@ class DB:
                     str(r[2]),
                     str(r[3]),
                     r[4],
-                    int(r[5]),
-                    int(r[6]),
-                    int(r[7]),
-                    int(r[8]),
-                    r[9]
+                    r[5],
+                    r[6],
+                    r[7],
+                    int(r[8]) if r[8] is not None else None,
+                    int(r[9]) if r[9] is not None else None,
+                    int(r[10]),
+                    int(r[11]),
+                    int(r[12]),
+                    int(r[13]),
+                    r[14]
                 ))
             return out
 
@@ -712,7 +804,9 @@ class DB:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
-                SELECT id, isbn, title, author, category_id, location, price_cents, cost_cents, stock_qty, is_active
+                SELECT id, isbn, title, author, category_id, location,
+                       length_in, width_in, height_in, weight_lb, weight_oz,
+                       price_cents, cost_cents, stock_qty, is_active
                 FROM books WHERE id=?;
             """, (int(book_id),))
             return cur.fetchone()
@@ -721,26 +815,98 @@ class DB:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("""
-                SELECT id, isbn, title, author, category_id, location, price_cents, cost_cents, stock_qty, is_active
+                SELECT id, isbn, title, author, category_id, location,
+                       length_in, width_in, height_in, weight_lb, weight_oz,
+                       price_cents, cost_cents, stock_qty, is_active
                 FROM books WHERE isbn=?;
             """, (isbn,))
             return cur.fetchone()
 
-    def add_book(self, isbn, title, author, category_id, location, price_cents, cost_cents, stock_qty, is_active=1):
+    def add_book(
+        self,
+        isbn,
+        title,
+        author,
+        category_id,
+        location,
+        length_in,
+        width_in,
+        height_in,
+        weight_lb,
+        weight_oz,
+        price_cents,
+        cost_cents,
+        stock_qty,
+        is_active=1
+    ):
         with self._connect() as conn:
             conn.execute("""
-                INSERT INTO books(isbn,title,author,category_id,location,price_cents,cost_cents,stock_qty,is_active)
-                VALUES(?,?,?,?,?,?,?,?,?);
-            """, (isbn or None, title.strip(), author.strip(), category_id, location, int(price_cents), int(cost_cents), int(stock_qty), int(is_active)))
+                INSERT INTO books(
+                    isbn, title, author, category_id, location,
+                    length_in, width_in, height_in, weight_lb, weight_oz,
+                    price_cents, cost_cents, stock_qty, is_active
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+            """, (
+                isbn or None,
+                title.strip(),
+                author.strip(),
+                category_id,
+                location,
+                length_in,
+                width_in,
+                height_in,
+                weight_lb,
+                weight_oz,
+                int(price_cents),
+                int(cost_cents),
+                int(stock_qty),
+                int(is_active),
+            ))
             conn.commit()
 
-    def update_book(self, book_id, isbn, title, author, category_id, location, price_cents, cost_cents, stock_qty, is_active):
+    def update_book(
+        self,
+        book_id,
+        isbn,
+        title,
+        author,
+        category_id,
+        location,
+        length_in,
+        width_in,
+        height_in,
+        weight_lb,
+        weight_oz,
+        price_cents,
+        cost_cents,
+        stock_qty,
+        is_active
+    ):
         with self._connect() as conn:
             conn.execute("""
                 UPDATE books
-                SET isbn=?, title=?, author=?, category_id=?, location=?, price_cents=?, cost_cents=?, stock_qty=?, is_active=?
+                SET isbn=?, title=?, author=?, category_id=?, location=?,
+                    length_in=?, width_in=?, height_in=?, weight_lb=?, weight_oz=?,
+                    price_cents=?, cost_cents=?, stock_qty=?, is_active=?
                 WHERE id=?;
-            """, (isbn or None, title.strip(), author.strip(), category_id, location, int(price_cents), int(cost_cents), int(stock_qty), int(is_active), int(book_id)))
+            """, (
+                isbn or None,
+                title.strip(),
+                author.strip(),
+                category_id,
+                location,
+                length_in,
+                width_in,
+                height_in,
+                weight_lb,
+                weight_oz,
+                int(price_cents),
+                int(cost_cents),
+                int(stock_qty),
+                int(is_active),
+                int(book_id),
+            ))
             conn.commit()
 
     def set_book_location(self, book_id: int, location: Optional[str]) -> None:
@@ -1614,7 +1780,7 @@ class App:
 
         self.books_tree = ttk.Treeview(
             tab,
-            columns=("isbn", "title", "author", "category", "location", "price", "cost", "stock", "active"),
+            columns=("isbn", "title", "author", "category", "location", "dimensions", "weight", "price", "cost", "stock", "active"),
             show="headings",
             height=18,
         )
@@ -1624,6 +1790,8 @@ class App:
             ("author", "Brand/Details", 180, "w"),
             ("category", "Category", 130, "w"),
             ("location", "Locations", 160, "w"),
+            ("dimensions", "Dimensions (LxWxH)", 160, "w"),
+            ("weight", "Weight (lb/oz)", 120, "w"),
             ("price", "Price", 90, "e"),
             ("cost", "Cost", 90, "e"),
             ("stock", "Stock", 70, "center"),
@@ -1644,10 +1812,38 @@ class App:
             in_stock_only=bool(self.book_instock.get()),
             include_inactive=bool(self.book_inactive.get()),
         )
-        for (bid, isbn, title, author, location, price, cost, stock, active, catname) in rows:
+        for (
+            bid,
+            isbn,
+            title,
+            author,
+            location,
+            length_in,
+            width_in,
+            height_in,
+            weight_lb,
+            weight_oz,
+            price,
+            cost,
+            stock,
+            active,
+            catname,
+        ) in rows:
             self.books_tree.insert(
                 "", "end", iid=str(bid),
-                values=(isbn or "", title, author, catname or "", location or "", cents_to_money(price), cents_to_money(cost), stock, "yes" if active else "no")
+                values=(
+                    isbn or "",
+                    title,
+                    author,
+                    catname or "",
+                    location or "",
+                    format_dimensions(length_in, width_in, height_in),
+                    format_weight(weight_lb, weight_oz),
+                    cents_to_money(price),
+                    cents_to_money(cost),
+                    stock,
+                    "yes" if active else "no",
+                )
             )
 
         self._refresh_pos_books()
@@ -1677,6 +1873,11 @@ class App:
         author_var = tk.StringVar(value="")
         cat_var = tk.StringVar(value=self.last_category_choice)
         location_var = tk.StringVar(value="")
+        length_var = tk.StringVar(value="")
+        width_var = tk.StringVar(value="")
+        height_var = tk.StringVar(value="")
+        weight_lb_var = tk.StringVar(value="")
+        weight_oz_var = tk.StringVar(value="")
         price_var = tk.StringVar(value="0.00")
         cost_var = tk.StringVar(value="0.00")
         stock_var = tk.StringVar(value="1")
@@ -1761,6 +1962,26 @@ class App:
         ttk.Entry(frame, textvariable=location_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
+        ttk.Label(frame, text="Dimensions (inches):").grid(row=r, column=0, sticky="w", pady=4)
+        dim_frame = ttk.Frame(frame)
+        dim_frame.grid(row=r, column=1, pady=4, sticky="w")
+        ttk.Label(dim_frame, text="L").pack(side="left")
+        ttk.Entry(dim_frame, textvariable=length_var, width=8).pack(side="left", padx=(4, 10))
+        ttk.Label(dim_frame, text="W").pack(side="left")
+        ttk.Entry(dim_frame, textvariable=width_var, width=8).pack(side="left", padx=(4, 10))
+        ttk.Label(dim_frame, text="H").pack(side="left")
+        ttk.Entry(dim_frame, textvariable=height_var, width=8).pack(side="left", padx=(4, 0))
+        r += 1
+
+        ttk.Label(frame, text="Weight (optional):").grid(row=r, column=0, sticky="w", pady=4)
+        weight_frame = ttk.Frame(frame)
+        weight_frame.grid(row=r, column=1, pady=4, sticky="w")
+        ttk.Label(weight_frame, text="lb").pack(side="left")
+        ttk.Entry(weight_frame, textvariable=weight_lb_var, width=8).pack(side="left", padx=(4, 10))
+        ttk.Label(weight_frame, text="oz").pack(side="left")
+        ttk.Entry(weight_frame, textvariable=weight_oz_var, width=8).pack(side="left", padx=(4, 0))
+        r += 1
+
         ttk.Label(frame, text="Price (e.g. 12.99):").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=price_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         price_btns = ttk.Frame(frame)
@@ -1791,6 +2012,11 @@ class App:
             author = author_var.get().strip()
             cat_name = cat_var.get().strip()
             location = normalize_locations(location_var.get())
+            length_raw = length_var.get()
+            width_raw = width_var.get()
+            height_raw = height_var.get()
+            weight_lb_raw = weight_lb_var.get()
+            weight_oz_raw = weight_oz_var.get()
             price_s = price_var.get().strip()
             cost_s = cost_var.get().strip()
             stock_s = stock_var.get().strip()
@@ -1800,13 +2026,20 @@ class App:
                 return
 
             try:
+                length_in = parse_optional_float(length_raw, "length")
+                width_in = parse_optional_float(width_raw, "width")
+                height_in = parse_optional_float(height_raw, "height")
+                weight_lb = parse_optional_int(weight_lb_raw, "weight (lb)")
+                weight_oz = parse_optional_int(weight_oz_raw, "weight (oz)")
+                if weight_oz is not None and weight_oz >= 16:
+                    raise ValueError("Weight (oz) must be between 0 and 15.")
                 price_cents = dollars_to_cents(price_s)
                 cost_cents = dollars_to_cents(cost_s)
                 stock = int(stock_s)
                 if stock < 0:
                     raise ValueError
             except Exception:
-                messagebox.showerror("Bad input", "Check price/cost/stock values.", parent=dlg)
+                messagebox.showerror("Bad input", "Check dimensions/weight/price/cost/stock values.", parent=dlg)
                 return
 
             if cat_name:
@@ -1836,9 +2069,39 @@ class App:
                         if merged_location != existing[5]:
                             self.db.set_book_location(int(existing[0]), merged_location)
                     else:
-                        self.db.add_book(isbn, title, author, cat_id, location, price_cents, cost_cents, stock, 1)
+                        self.db.add_book(
+                            isbn,
+                            title,
+                            author,
+                            cat_id,
+                            location,
+                            length_in,
+                            width_in,
+                            height_in,
+                            weight_lb,
+                            weight_oz,
+                            price_cents,
+                            cost_cents,
+                            stock,
+                            1,
+                        )
                 else:
-                    self.db.add_book(isbn, title, author, cat_id, location, price_cents, cost_cents, stock, 1)
+                    self.db.add_book(
+                        isbn,
+                        title,
+                        author,
+                        cat_id,
+                        location,
+                        length_in,
+                        width_in,
+                        height_in,
+                        weight_lb,
+                        weight_oz,
+                        price_cents,
+                        cost_cents,
+                        stock,
+                        1,
+                    )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not add item.\n\n{e}", parent=dlg)
                 return
@@ -1853,6 +2116,11 @@ class App:
                 cost_var.set("0.00")
                 stock_var.set("1")
                 scan_var.set("")
+                length_var.set("")
+                width_var.set("")
+                height_var.set("")
+                weight_lb_var.set("")
+                weight_oz_var.set("")
                 scan_entry.focus_set()
                 show_status("Added. Ready for another item.")
             else:
@@ -1884,7 +2152,23 @@ class App:
             messagebox.showerror("Missing", "Item not found.")
             return
 
-        _id, isbn, title, author, cat_id, location, price, cost, stock, active = row
+        (
+            _id,
+            isbn,
+            title,
+            author,
+            cat_id,
+            location,
+            length_in,
+            width_in,
+            height_in,
+            weight_lb,
+            weight_oz,
+            price,
+            cost,
+            stock,
+            active,
+        ) = row
 
         catname = ""
         if cat_id:
@@ -1907,6 +2191,11 @@ class App:
         author_var = tk.StringVar(value=author)
         cat_var = tk.StringVar(value=catname)
         location_var = tk.StringVar(value=location or "")
+        length_var = tk.StringVar(value="" if length_in is None else str(length_in))
+        width_var = tk.StringVar(value="" if width_in is None else str(width_in))
+        height_var = tk.StringVar(value="" if height_in is None else str(height_in))
+        weight_lb_var = tk.StringVar(value="" if weight_lb is None else str(weight_lb))
+        weight_oz_var = tk.StringVar(value="" if weight_oz is None else str(weight_oz))
         price_var = tk.StringVar(value=f"{int(price)/100:.2f}")
         cost_var = tk.StringVar(value=f"{int(cost)/100:.2f}")
         stock_var = tk.StringVar(value=str(stock))
@@ -1944,6 +2233,26 @@ class App:
         ttk.Entry(frame, textvariable=location_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         r += 1
 
+        ttk.Label(frame, text="Dimensions (inches):").grid(row=r, column=0, sticky="w", pady=4)
+        dim_frame = ttk.Frame(frame)
+        dim_frame.grid(row=r, column=1, pady=4, sticky="w")
+        ttk.Label(dim_frame, text="L").pack(side="left")
+        ttk.Entry(dim_frame, textvariable=length_var, width=8).pack(side="left", padx=(4, 10))
+        ttk.Label(dim_frame, text="W").pack(side="left")
+        ttk.Entry(dim_frame, textvariable=width_var, width=8).pack(side="left", padx=(4, 10))
+        ttk.Label(dim_frame, text="H").pack(side="left")
+        ttk.Entry(dim_frame, textvariable=height_var, width=8).pack(side="left", padx=(4, 0))
+        r += 1
+
+        ttk.Label(frame, text="Weight (optional):").grid(row=r, column=0, sticky="w", pady=4)
+        weight_frame = ttk.Frame(frame)
+        weight_frame.grid(row=r, column=1, pady=4, sticky="w")
+        ttk.Label(weight_frame, text="lb").pack(side="left")
+        ttk.Entry(weight_frame, textvariable=weight_lb_var, width=8).pack(side="left", padx=(4, 10))
+        ttk.Label(weight_frame, text="oz").pack(side="left")
+        ttk.Entry(weight_frame, textvariable=weight_oz_var, width=8).pack(side="left", padx=(4, 0))
+        r += 1
+
         ttk.Label(frame, text="Price (e.g. 12.99):").grid(row=r, column=0, sticky="w", pady=4)
         ttk.Entry(frame, textvariable=price_var, width=46).grid(row=r, column=1, pady=4, sticky="w")
         price_btns = ttk.Frame(frame)
@@ -1972,6 +2281,11 @@ class App:
             author_val = author_var.get().strip()
             cat_name = cat_var.get().strip()
             location_val = normalize_locations(location_var.get())
+            length_raw = length_var.get()
+            width_raw = width_var.get()
+            height_raw = height_var.get()
+            weight_lb_raw = weight_lb_var.get()
+            weight_oz_raw = weight_oz_var.get()
             price_s = price_var.get().strip()
             cost_s = cost_var.get().strip()
             stock_s = stock_var.get().strip()
@@ -1981,6 +2295,13 @@ class App:
                 return
 
             try:
+                length_val = parse_optional_float(length_raw, "length")
+                width_val = parse_optional_float(width_raw, "width")
+                height_val = parse_optional_float(height_raw, "height")
+                weight_lb_val = parse_optional_int(weight_lb_raw, "weight (lb)")
+                weight_oz_val = parse_optional_int(weight_oz_raw, "weight (oz)")
+                if weight_oz_val is not None and weight_oz_val >= 16:
+                    raise ValueError("Weight (oz) must be between 0 and 15.")
                 price2 = dollars_to_cents(price_s)
                 cost2 = dollars_to_cents(cost_s)
                 stock2 = int(stock_s)
@@ -1988,7 +2309,7 @@ class App:
                 if stock2 < 0:
                     raise ValueError
             except Exception:
-                messagebox.showerror("Bad input", "Check price/cost/stock/active.", parent=dlg)
+                messagebox.showerror("Bad input", "Check dimensions/weight/price/cost/stock/active.", parent=dlg)
                 return
 
             cat_id2 = None
@@ -2001,7 +2322,23 @@ class App:
                 cat_id2 = next((c[0] for c in cats if c[1] == cat_name), None)
 
             try:
-                self.db.update_book(bid, isbn_val, title_val, author_val, cat_id2, location_val, price2, cost2, stock2, active2)
+                self.db.update_book(
+                    bid,
+                    isbn_val,
+                    title_val,
+                    author_val,
+                    cat_id2,
+                    location_val,
+                    length_val,
+                    width_val,
+                    height_val,
+                    weight_lb_val,
+                    weight_oz_val,
+                    price2,
+                    cost2,
+                    stock2,
+                    active2,
+                )
             except sqlite3.IntegrityError as e:
                 messagebox.showerror("DB error", f"Could not update.\n\n{e}", parent=dlg)
                 return
@@ -2045,7 +2382,7 @@ class App:
         row = self.db.get_book(bid)
         if not row:
             return
-        active = int(row[9])
+        active = int(row[14])
         self.db.set_book_active(bid, 0 if active else 1)
         self.refresh_books()
 
@@ -2076,13 +2413,40 @@ class App:
         if not path:
             return
         q = """
-            SELECT IFNULL(isbn,''), title, author, IFNULL(location,''), price_cents, cost_cents, stock_qty, is_active
+            SELECT
+                IFNULL(isbn,''),
+                title,
+                author,
+                IFNULL(location,''),
+                length_in,
+                width_in,
+                height_in,
+                weight_lb,
+                weight_oz,
+                price_cents,
+                cost_cents,
+                stock_qty,
+                is_active
             FROM books
             ORDER BY title;
         """
         self.db.export_table_to_csv(
             q,
-            ["barcode", "item_name", "brand_details", "locations", "price_cents", "cost_cents", "stock_qty", "is_active"],
+            [
+                "barcode",
+                "item_name",
+                "brand_details",
+                "locations",
+                "length_in",
+                "width_in",
+                "height_in",
+                "weight_lb",
+                "weight_oz",
+                "price_cents",
+                "cost_cents",
+                "stock_qty",
+                "is_active",
+            ],
             path,
         )
         messagebox.showinfo("Exported", f"Saved:\n{path}")
@@ -2347,7 +2711,23 @@ class App:
             return
         for i in self.pos_books_tree.get_children():
             self.pos_books_tree.delete(i)
-        for (bid, isbn, title, author, location, price, cost, stock, active, cat) in self.db.list_books("", in_stock_only=False, include_inactive=False):
+        for (
+            bid,
+            isbn,
+            title,
+            author,
+            location,
+            _length_in,
+            _width_in,
+            _height_in,
+            _weight_lb,
+            _weight_oz,
+            price,
+            cost,
+            stock,
+            active,
+            cat,
+        ) in self.db.list_books("", in_stock_only=False, include_inactive=False):
             self.pos_books_tree.insert("", "end", iid=str(bid), values=(isbn or "", title, cents_to_money(price), stock))
 
     def scan_add(self):
@@ -2405,7 +2785,23 @@ class App:
         b = self.db.get_book(book_id)
         if not b:
             raise ValueError("item missing")
-        _id, isbn, title, author, cat_id, location, price, cost, stock, active = b
+        (
+            _id,
+            isbn,
+            title,
+            author,
+            cat_id,
+            location,
+            _length_in,
+            _width_in,
+            _height_in,
+            _weight_lb,
+            _weight_oz,
+            price,
+            cost,
+            stock,
+            active,
+        ) = b
         if not int(active):
             raise ValueError("archived")
         if book_id in self.cart:
