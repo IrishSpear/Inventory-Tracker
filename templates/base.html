@@ -21,8 +21,36 @@
               <a class="nav-link" href="{{ url_for('inventory') }}">Inventory</a>
             </li>
             <li class="nav-item">
-              <a class="nav-link" href="{{ url_for('reorder') }}">Reorder</a>
+              <a class="nav-link" href="{{ url_for('sales') }}">Sales</a>
             </li>
+            <li class="nav-item">
+              <a class="nav-link" href="{{ url_for('returns') }}">Returns</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="{{ url_for('customers') }}">Customers</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="{{ url_for('reports') }}">Reports</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="{{ url_for('platform_sales') }}">Platform Sales</a>
+            </li>
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                Inventory Tools
+              </a>
+              <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="{{ url_for('reorder') }}">Reorder</a></li>
+                <li><a class="dropdown-item" href="{{ url_for('availability', status='pending') }}">Pending Items</a></li>
+                <li><a class="dropdown-item" href="{{ url_for('availability', status='pickup_ship') }}">Pickup/Ship Items</a></li>
+                <li><a class="dropdown-item" href="{{ url_for('adjustments') }}">Adjustments</a></li>
+              </ul>
+            </li>
+            {% if session.get('role') == 'admin' %}
+            <li class="nav-item">
+              <a class="nav-link" href="{{ url_for('admin') }}">Admin</a>
+            </li>
+            {% endif %}
           </ul>
           {% if session.get('username') %}
           <div class="d-flex align-items-center gap-3">

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% set title = "Returns" %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="h4 mb-0">Returns</h2>
+    <a class="btn btn-primary" href="{{ url_for('return_new') }}">New Return</a>
+  </div>
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Date</th>
+            <th>Original Receipt</th>
+            <th>Refund</th>
+            <th>Method</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rid, created_at, receipt_no, refund_cents, method in rows %}
+            <tr>
+              <td>{{ rid }}</td>
+              <td>{{ created_at }}</td>
+              <td>{{ receipt_no }}</td>
+              <td>{{ cents_to_money(refund_cents) }}</td>
+              <td>{{ method }}</td>
+              <td>
+                <div class="d-flex gap-1">
+                  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('return_receipt', return_id=rid) }}">View</a>
+                  {% if session.get('role') == 'admin' %}
+                  <form method="post" action="{{ url_for('return_delete', return_id=rid) }}">
+                    <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                  </form>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="6" class="text-center text-muted">No returns found.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% set title = "New Sale" %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="post">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Customer</label>
+            <select class="form-select" name="customer_id" required>
+              <option value="">Select customer</option>
+              {% for cid, name, email, _active in customers %}
+                <option value="{{ cid }}">{{ name }} ({{ email }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Tax Rate</label>
+            <input class="form-control" name="tax_rate" value="{{ default_tax }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Order Discount</label>
+            <input class="form-control" name="order_discount" placeholder="$0.00">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Coupon Code</label>
+            <input class="form-control" name="coupon_code">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Payment Method</label>
+            <select class="form-select" name="payment_method">
+              {% for method in payment_methods %}
+                <option value="{{ method }}">{{ method }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Payment Status</label>
+            <select class="form-select" name="payment_status">
+              {% for status in payment_statuses %}
+                <option value="{{ status }}">{{ status }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Platform</label>
+            <select class="form-select" name="platform">
+              {% for platform in platforms %}
+                <option value="{{ platform }}">{{ platform }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Note</label>
+            <textarea class="form-control" name="note" rows="2"></textarea>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Cart Items</label>
+            <textarea class="form-control" name="cart_lines" rows="5" placeholder="book_id,qty,unit_price(optional),line_discount(optional)"></textarea>
+            <div class="form-text">Example: 12,2,$15.00,$2.00</div>
+          </div>
+        </div>
+        <div class="mt-4 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Create Sale</button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('sales') }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

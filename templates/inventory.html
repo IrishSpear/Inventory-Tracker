@@ -2,6 +2,19 @@
 {% set title = "Inventory" %}
 
 {% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
+    <div>
+      <a class="btn btn-primary" href="{{ url_for('book_new') }}">Add Item</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('books_csv') }}">Export CSV</a>
+    </div>
+    {% if session.get('role') == 'admin' %}
+    <form class="d-flex align-items-center gap-2" method="post" action="{{ url_for('books_import') }}" enctype="multipart/form-data">
+      <input class="form-control form-control-sm" type="file" name="file" accept=".csv">
+      <button class="btn btn-outline-primary btn-sm" type="submit">Import CSV</button>
+    </form>
+    {% endif %}
+  </div>
+
   <div class="card shadow-sm mb-4">
     <div class="card-body">
       <form class="row g-3">
@@ -64,6 +77,8 @@
               <th>Reorder Point</th>
               <th>Location</th>
               <th>Barcode</th>
+              <th>Status</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -81,10 +96,37 @@
                 <td>{{ row.reorder_point }}</td>
                 <td>{{ row.location or "-" }}</td>
                 <td>{{ row.barcode or row.isbn or "-" }}</td>
+                <td>
+                  {% if row.active %}
+                    <span class="badge bg-success">Active</span>
+                  {% else %}
+                    <span class="badge bg-secondary">Archived</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div class="d-flex flex-wrap gap-1">
+                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('book_edit', book_id=row.id) }}">Edit</a>
+                    <form method="post" action="{{ url_for('book_toggle', book_id=row.id) }}">
+                      <button class="btn btn-sm btn-outline-secondary" type="submit">Toggle</button>
+                    </form>
+                    {% if session.get('role') == 'admin' %}
+                    <form method="post" action="{{ url_for('book_delete', book_id=row.id) }}">
+                      <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+                  </div>
+                  <form class="mt-2" method="post" action="{{ url_for('book_adjust', book_id=row.id) }}">
+                    <div class="input-group input-group-sm">
+                      <input class="form-control" name="delta" type="number" placeholder="Adjust">
+                      <input class="form-control" name="reason" type="text" placeholder="Reason">
+                      <button class="btn btn-outline-primary" type="submit">Apply</button>
+                    </div>
+                  </form>
+                </td>
               </tr>
             {% else %}
               <tr>
-                <td colspan="9" class="text-center text-muted">No inventory matches those filters.</td>
+                <td colspan="11" class="text-center text-muted">No inventory matches those filters.</td>
               </tr>
             {% endfor %}
           </tbody>

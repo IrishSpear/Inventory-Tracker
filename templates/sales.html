@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% set title = "Sales" %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="h4 mb-0">Sales</h2>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('sales_csv') }}">Export CSV</a>
+      <a class="btn btn-primary" href="{{ url_for('sale_new') }}">New Sale</a>
+    </div>
+  </div>
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-striped align-middle">
+          <thead>
+            <tr>
+              <th>Receipt</th>
+              <th>Date</th>
+              <th>Platform</th>
+              <th>Total</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for sid, receipt_no, created_at, platform, total_cents, payment_status, is_void in rows %}
+              <tr>
+                <td>{{ receipt_no }}</td>
+                <td>{{ created_at }}</td>
+                <td>{{ platform }}</td>
+                <td>{{ cents_to_money(total_cents) }}</td>
+                <td>
+                  {% if is_void %}
+                    <span class="badge bg-secondary">Void</span>
+                  {% else %}
+                    <span class="badge bg-info text-dark">{{ payment_status }}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div class="d-flex flex-wrap gap-1">
+                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('sale_receipt', sale_id=sid) }}">View</a>
+                    <form method="post" action="{{ url_for('sale_payment', sale_id=sid) }}">
+                      <select class="form-select form-select-sm" name="payment_status">
+                        {% for status in payment_statuses %}
+                          <option value="{{ status }}">{{ status }}</option>
+                        {% endfor %}
+                      </select>
+                      <button class="btn btn-sm btn-outline-secondary mt-1" type="submit">Update</button>
+                    </form>
+                    <form method="post" action="{{ url_for('sale_void', sale_id=sid) }}">
+                      <button class="btn btn-sm btn-outline-warning" type="submit">Void</button>
+                    </form>
+                    {% if session.get('role') == 'admin' %}
+                    <form method="post" action="{{ url_for('sale_delete', sale_id=sid) }}">
+                      <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="6" class="text-center text-muted">No sales found.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

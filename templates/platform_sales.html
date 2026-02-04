@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% set title = "Platform Sales" %}
+
+{% block content %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h2 class="h5">Log Platform Sale</h2>
+      <form method="post" class="row g-3">
+        <div class="col-md-2">
+          <label class="form-label">Book ID</label>
+          <input class="form-control" name="book_id" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Platform</label>
+          <select class="form-select" name="platform">
+            {% for platform in platforms %}
+              <option value="{{ platform }}">{{ platform }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Listed Price</label>
+          <input class="form-control" name="listed_price" placeholder="$0.00">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Final Price</label>
+          <input class="form-control" name="final_price" placeholder="$0.00">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Amount Paid</label>
+          <input class="form-control" name="amount_paid" placeholder="$0.00">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Status</label>
+          <select class="form-select" name="status">
+            {% for status in statuses %}
+              <option value="{{ status }}">{{ status }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Note</label>
+          <input class="form-control" name="note">
+        </div>
+        <div class="col-12">
+          <button class="btn btn-primary" type="submit">Log Sale</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form class="row g-2 mb-3" method="get">
+        <div class="col-md-6">
+          <input class="form-control" name="search" placeholder="Search" value="{{ search }}">
+        </div>
+        <div class="col-md-4">
+          <select class="form-select" name="status" multiple>
+            {% for status in statuses %}
+              <option value="{{ status }}" {% if status in status_filter %}selected{% endif %}>{{ status }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <button class="btn btn-outline-primary w-100" type="submit">Filter</button>
+        </div>
+      </form>
+      <div class="table-responsive">
+        <table class="table table-striped align-middle">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Date</th>
+              <th>Item</th>
+              <th>Platform</th>
+              <th>Listed</th>
+              <th>Final</th>
+              <th>Paid</th>
+              <th>Status</th>
+              <th>Note</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>{{ row[0] }}</td>
+                <td>{{ row[1] }}</td>
+                <td>#{{ row[2] }} {{ row[3] }}</td>
+                <td>{{ row[4] }}</td>
+                <td>{{ cents_to_money(row[5]) }}</td>
+                <td>{{ cents_to_money(row[6]) }}</td>
+                <td>{{ cents_to_money(row[7]) }}</td>
+                <td>{{ row[8] }}</td>
+                <td>{{ row[9] or '' }}</td>
+                <td>
+                  <div class="d-flex flex-column gap-2">
+                    <form method="post" action="{{ url_for('platform_sale_update', sale_id=row[0]) }}">
+                      <input class="form-control form-control-sm mb-1" name="final_price" placeholder="Final price">
+                      <select class="form-select form-select-sm mb-1" name="status">
+                        {% for status in statuses %}
+                          <option value="{{ status }}">{{ status }}</option>
+                        {% endfor %}
+                      </select>
+                      <input class="form-control form-control-sm mb-1" name="note" placeholder="Note">
+                      <button class="btn btn-sm btn-outline-secondary" type="submit">Update</button>
+                    </form>
+                    <form method="post" action="{{ url_for('platform_sale_payment', sale_id=row[0]) }}">
+                      <input class="form-control form-control-sm mb-1" name="final_price" placeholder="Final price">
+                      <input class="form-control form-control-sm mb-1" name="amount_paid" placeholder="Amount paid">
+                      <input class="form-control form-control-sm mb-1" name="note" placeholder="Note">
+                      <button class="btn btn-sm btn-outline-primary" type="submit">Update Payment</button>
+                    </form>
+                    <form method="post" action="{{ url_for('platform_sale_finalize', sale_id=row[0]) }}">
+                      <button class="btn btn-sm btn-outline-success" type="submit">Finalize</button>
+                    </form>
+                    {% if session.get('role') == 'admin' %}
+                    <form method="post" action="{{ url_for('platform_sale_delete', sale_id=row[0]) }}">
+                      <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="10" class="text-center text-muted">No platform sales found.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

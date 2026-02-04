@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% set title = "Customers" %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <form class="d-flex gap-2" method="get">
+      <input class="form-control" name="search" placeholder="Search" value="{{ search }}">
+      <button class="btn btn-outline-primary" type="submit">Search</button>
+    </form>
+    <a class="btn btn-primary" href="{{ url_for('customer_new') }}">Add Customer</a>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-striped align-middle">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for cid, name, email, active in rows %}
+              <tr>
+                <td>{{ name }}</td>
+                <td>{{ email }}</td>
+                <td>
+                  {% if active %}
+                    <span class="badge bg-success">Active</span>
+                  {% else %}
+                    <span class="badge bg-secondary">Inactive</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div class="d-flex flex-wrap gap-1">
+                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('customer_edit', customer_id=cid) }}">Edit</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('customer_history', customer_id=cid) }}">History</a>
+                    <form method="post" action="{{ url_for('customer_toggle', customer_id=cid) }}">
+                      <button class="btn btn-sm btn-outline-warning" type="submit">Toggle</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="4" class="text-center text-muted">No customers found.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

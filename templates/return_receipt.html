@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% set title = "Return Receipt" %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <pre class="mb-0">{{ receipt[0] }}</pre>
+    </div>
+  </div>
+{% endblock %}

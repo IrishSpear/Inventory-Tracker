@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% set title = "Admin" %}
+
+{% block content %}
+  <div class="row g-3">
+    <div class="col-lg-6">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h2 class="h5">Store Settings</h2>
+          <form method="post" class="row g-3">
+            <input type="hidden" name="action" value="settings">
+            <div class="col-12">
+              <label class="form-label">Store Name</label>
+              <input class="form-control" name="store_name" value="{{ settings.store_name }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Address</label>
+              <input class="form-control" name="store_address" value="{{ settings.store_address }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Phone</label>
+              <input class="form-control" name="store_phone" value="{{ settings.store_phone }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Receipt Footer</label>
+              <input class="form-control" name="receipt_footer" value="{{ settings.receipt_footer }}">
+            </div>
+            <div class="col-6">
+              <label class="form-label">Receipt Prefix</label>
+              <input class="form-control" name="receipt_prefix" value="{{ settings.receipt_prefix }}">
+            </div>
+            <div class="col-6">
+              <label class="form-label">Default Tax Rate</label>
+              <input class="form-control" name="tax_rate_default" value="{{ settings.tax_rate_default }}">
+            </div>
+            <div class="col-12">
+              <button class="btn btn-primary" type="submit">Save Settings</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h5">Backup & Restore</h2>
+          <div class="d-flex gap-2 mb-3">
+            <a class="btn btn-outline-secondary" href="{{ url_for('admin_backup') }}">Download Backup</a>
+          </div>
+          <form method="post" action="{{ url_for('admin_restore') }}" enctype="multipart/form-data">
+            <div class="input-group">
+              <input class="form-control" type="file" name="file" accept=".db">
+              <button class="btn btn-outline-primary" type="submit">Restore DB</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-6">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h2 class="h5">Categories</h2>
+          <form method="post" class="row g-2 mb-3">
+            <input type="hidden" name="action" value="category_add">
+            <div class="col-8">
+              <input class="form-control" name="name" placeholder="Category name">
+            </div>
+            <div class="col-4">
+              <button class="btn btn-primary w-100" type="submit">Add</button>
+            </div>
+          </form>
+          <table class="table table-sm">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Toggle</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for cid, name, active in categories %}
+                <tr>
+                  <td>{{ name }}</td>
+                  <td>{{ 'Active' if active else 'Inactive' }}</td>
+                  <td>
+                    <form method="post">
+                      <input type="hidden" name="action" value="category_toggle">
+                      <input type="hidden" name="category_id" value="{{ cid }}">
+                      <input type="hidden" name="active" value="{{ 0 if active else 1 }}">
+                      <button class="btn btn-sm btn-outline-secondary" type="submit">Toggle</button>
+                    </form>
+                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="3" class="text-center text-muted">No categories.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h2 class="h5">Coupons</h2>
+          <form method="post" class="row g-2 mb-3">
+            <input type="hidden" name="action" value="coupon_add">
+            <div class="col-3">
+              <input class="form-control" name="code" placeholder="Code">
+            </div>
+            <div class="col-3">
+              <select class="form-select" name="kind">
+                <option value="percent">percent</option>
+                <option value="fixed">fixed</option>
+              </select>
+            </div>
+            <div class="col-2">
+              <input class="form-control" name="value" placeholder="Value">
+            </div>
+            <div class="col-2">
+              <input class="form-control" name="expires_on" placeholder="YYYY-MM-DD">
+            </div>
+            <div class="col-2">
+              <select class="form-select" name="is_active">
+                <option value="1">Active</option>
+                <option value="0">Inactive</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <button class="btn btn-primary" type="submit">Add Coupon</button>
+            </div>
+          </form>
+          <table class="table table-sm">
+            <thead>
+              <tr>
+                <th>Code</th>
+                <th>Kind</th>
+                <th>Value</th>
+                <th>Active</th>
+                <th>Expires</th>
+                <th>Edit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for cid, code, kind, value, active, exp in coupons %}
+                <tr>
+                  <td>{{ code }}</td>
+                  <td>{{ kind }}</td>
+                  <td>{{ value }}</td>
+                  <td>{{ 'Yes' if active else 'No' }}</td>
+                  <td>{{ exp or '' }}</td>
+                  <td>
+                    <form method="post" class="row g-1">
+                      <input type="hidden" name="action" value="coupon_edit">
+                      <input type="hidden" name="coupon_id" value="{{ cid }}">
+                      <div class="col-4">
+                        <input class="form-control form-control-sm" name="code" value="{{ code }}">
+                      </div>
+                      <div class="col-2">
+                        <select class="form-select form-select-sm" name="kind">
+                          <option value="percent" {% if kind == 'percent' %}selected{% endif %}>%</option>
+                          <option value="fixed" {% if kind == 'fixed' %}selected{% endif %}>$</option>
+                        </select>
+                      </div>
+                      <div class="col-2">
+                        <input class="form-control form-control-sm" name="value" value="{{ value }}">
+                      </div>
+                      <div class="col-2">
+                        <input class="form-control form-control-sm" name="expires_on" value="{{ exp or '' }}">
+                      </div>
+                      <div class="col-2">
+                        <select class="form-select form-select-sm" name="is_active">
+                          <option value="1" {% if active %}selected{% endif %}>Yes</option>
+                          <option value="0" {% if not active %}selected{% endif %}>No</option>
+                        </select>
+                      </div>
+                      <div class="col-12">
+                        <button class="btn btn-sm btn-outline-secondary" type="submit">Save</button>
+                      </div>
+                    </form>
+                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="6" class="text-center text-muted">No coupons.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h5">Users</h2>
+          <form method="post" class="row g-2 mb-3">
+            <input type="hidden" name="action" value="user_add">
+            <div class="col-4">
+              <input class="form-control" name="username" placeholder="Username">
+            </div>
+            <div class="col-3">
+              <input class="form-control" name="password" placeholder="Temp password">
+            </div>
+            <div class="col-3">
+              <select class="form-select" name="role">
+                <option value="clerk">clerk</option>
+                <option value="admin">admin</option>
+              </select>
+            </div>
+            <div class="col-2">
+              <button class="btn btn-primary w-100" type="submit">Add</button>
+            </div>
+          </form>
+          <table class="table table-sm">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for uid, username, role, active in users %}
+                <tr>
+                  <td>{{ username }}</td>
+                  <td>{{ role }}</td>
+                  <td>{{ 'Active' if active else 'Inactive' }}</td>
+                  <td>
+                    <form method="post" class="d-flex flex-wrap gap-2">
+                      <input type="hidden" name="action" value="user_toggle">
+                      <input type="hidden" name="user_id" value="{{ uid }}">
+                      <input type="hidden" name="active" value="{{ 0 if active else 1 }}">
+                      <button class="btn btn-sm btn-outline-secondary" type="submit">Toggle</button>
+                    </form>
+                    <form method="post" class="d-flex gap-2 mt-2">
+                      <input type="hidden" name="action" value="user_reset">
+                      <input type="hidden" name="user_id" value="{{ uid }}">
+                      <input class="form-control form-control-sm" name="password" placeholder="New password">
+                      <button class="btn btn-sm btn-outline-primary" type="submit">Reset</button>
+                    </form>
+                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="4" class="text-center text-muted">No users.</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% set title = "New Return" %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="post">
+        <div class="row g-3">
+          <div class="col-md-3">
+            <label class="form-label">Sale ID</label>
+            <input class="form-control" name="sale_id" required>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Refund Method</label>
+            <input class="form-control" name="refund_method" value="cash">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Reason</label>
+            <input class="form-control" name="reason">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Return Items</label>
+            <textarea class="form-control" name="return_lines" rows="4" placeholder="book_id,qty"></textarea>
+          </div>
+        </div>
+        <div class="mt-4 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Create Return</button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('returns') }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}
