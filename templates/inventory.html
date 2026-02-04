@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% set title = "Inventory" %}
+
+{% block content %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <form class="row g-3">
+        <div class="col-lg-4">
+          <label class="form-label" for="search">Search</label>
+          <input class="form-control" id="search" name="search" type="text" value="{{ search }}">
+        </div>
+        <div class="col-lg-2">
+          <label class="form-label" for="condition">Condition</label>
+          <select class="form-select" id="condition" name="condition">
+            {% for option in conditions %}
+              <option value="{{ option }}" {% if option == condition %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-lg-2">
+          <label class="form-label" for="availability">Availability</label>
+          <select class="form-select" id="availability" name="availability">
+            {% for value, label in availability_options %}
+              <option value="{{ value }}" {% if value == availability %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-lg-4">
+          <label class="form-label" for="category_id">Category</label>
+          <select class="form-select" id="category_id" name="category_id">
+            <option value="">All</option>
+            {% for cid, name, _active in categories %}
+              <option value="{{ cid }}" {% if cid == category_id %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 d-flex gap-3 align-items-center">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="in_stock" name="in_stock" value="1" {% if in_stock %}checked{% endif %}>
+            <label class="form-check-label" for="in_stock">In stock only</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="low_stock" name="low_stock" value="1" {% if low_stock %}checked{% endif %}>
+            <label class="form-check-label" for="low_stock">Low stock only</label>
+          </div>
+          <button class="btn btn-primary ms-auto" type="submit">Apply filters</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-striped align-middle">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Category</th>
+              <th>Condition</th>
+              <th>Availability</th>
+              <th>Price</th>
+              <th>Stock</th>
+              <th>Reorder Point</th>
+              <th>Location</th>
+              <th>Barcode</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ row.title }}</div>
+                  <div class="text-muted small">{{ row.author }}</div>
+                </td>
+                <td>{{ row.category }}</td>
+                <td>{{ row.condition }}</td>
+                <td>{{ row.availability }}</td>
+                <td>{{ row.price }}</td>
+                <td>{{ row.stock }}</td>
+                <td>{{ row.reorder_point }}</td>
+                <td>{{ row.location or "-" }}</td>
+                <td>{{ row.barcode or row.isbn or "-" }}</td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="9" class="text-center text-muted">No inventory matches those filters.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

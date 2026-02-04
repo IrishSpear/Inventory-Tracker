@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% set title = "Reorder Suggestions" %}
+
+{% block content %}
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+      <h1 class="h4 mb-0">Reorder suggestions</h1>
+      <p class="text-muted mb-0">Items at or below their reorder point.</p>
+    </div>
+    <a class="btn btn-outline-primary" href="{{ url_for('reorder_csv') }}">Export CSV</a>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-striped align-middle">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Category</th>
+              <th>Stock</th>
+              <th>Reorder Point</th>
+              <th>Reorder Qty</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>{{ row.title }}</td>
+                <td>{{ row.category }}</td>
+                <td>{{ row.stock }}</td>
+                <td>{{ row.reorder_point }}</td>
+                <td>{{ row.reorder_qty }}</td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="5" class="text-center text-muted">No items need reordering.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

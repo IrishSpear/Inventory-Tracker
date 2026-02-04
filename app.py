@@ -342,12 +342,19 @@ def fetch_title_info_upcitemdb(barcode: str) -> Optional[Dict[str, str]]:
 class DB:
     def __init__(self, path: str = DB_PATH):
         self.path = path
+        self._conn: Optional[sqlite3.Connection] = None
+        self.fts_enabled = False
         self._init_db()
 
     def _connect(self):
-        conn = sqlite3.connect(self.path)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        return conn
+        if self._conn is None:
+            conn = sqlite3.connect(self.path, check_same_thread=False)
+            conn.execute("PRAGMA foreign_keys = ON;")
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
+            conn.execute("PRAGMA busy_timeout = 5000;")
+            self._conn = conn
+        return self._conn
 
     def _table_exists(self, conn, name: str) -> bool:
         cur = conn.cursor()
@@ -470,59 +477,59 @@ class DB:
         conn.commit()
 
     def _init_db(self):
-        with self._connect() as conn:
-            cur = conn.cursor()
+        conn = self._connect()
+        cur = conn.cursor()
 
-            # Minimal prerequisites for migration (customers/books must exist or old schema won't be workable)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS customers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    email TEXT NOT NULL,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    UNIQUE(name, email)
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS books (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    isbn TEXT UNIQUE,
-                    barcode TEXT UNIQUE,
-                    title TEXT NOT NULL,
-                    author TEXT NOT NULL,
-                    category_id INTEGER,
-                    location TEXT,
-                    length_in REAL,
-                    width_in REAL,
-                    height_in REAL,
-                    weight_lb REAL,
-                    weight_oz REAL,
-                    condition TEXT NOT NULL DEFAULT 'Good',
-                    price_cents INTEGER NOT NULL DEFAULT 0,
-                    cost_cents INTEGER NOT NULL DEFAULT 0,
-                    stock_qty INTEGER NOT NULL DEFAULT 0,
-                    reorder_point INTEGER NOT NULL DEFAULT 0,
-                    reorder_qty INTEGER NOT NULL DEFAULT 0,
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    uploaded_facebook INTEGER NOT NULL DEFAULT 0,
-                    uploaded_ebay INTEGER NOT NULL DEFAULT 0,
-                    availability_status TEXT NOT NULL DEFAULT 'available'
-                );
-            """)
-            conn.commit()
+        # Minimal prerequisites for migration (customers/books must exist or old schema won't be workable)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                email TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(name, email)
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                isbn TEXT UNIQUE,
+                barcode TEXT UNIQUE,
+                title TEXT NOT NULL,
+                author TEXT NOT NULL,
+                category_id INTEGER,
+                location TEXT,
+                length_in REAL,
+                width_in REAL,
+                height_in REAL,
+                weight_lb REAL,
+                weight_oz REAL,
+                condition TEXT NOT NULL DEFAULT 'Good',
+                price_cents INTEGER NOT NULL DEFAULT 0,
+                cost_cents INTEGER NOT NULL DEFAULT 0,
+                stock_qty INTEGER NOT NULL DEFAULT 0,
+                reorder_point INTEGER NOT NULL DEFAULT 0,
+                reorder_qty INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                uploaded_facebook INTEGER NOT NULL DEFAULT 0,
+                uploaded_ebay INTEGER NOT NULL DEFAULT 0,
+                availability_status TEXT NOT NULL DEFAULT 'available'
+            );
+        """)
+        conn.commit()
 
-            # Migration if needed
-            self._try_migrate_old_sales_schema(conn)
+        # Migration if needed
+        self._try_migrate_old_sales_schema(conn)
 
-            # Full schema
-            cur.execute("""
+        # Full schema
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE,
@@ -531,18 +538,18 @@ class DB:
                     role TEXT NOT NULL CHECK(role IN ('admin','clerk')),
                     is_active INTEGER NOT NULL DEFAULT 1
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS categories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     is_active INTEGER NOT NULL DEFAULT 1
                 );
-            """)
+        """)
 
-            # Add missing FK on books.category_id if old books table lacks it (SQLite can't add FK; we just keep column)
-            cur.execute("""
+        # Add missing FK on books.category_id if old books table lacks it (SQLite can't add FK; we just keep column)
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS coupons (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     code TEXT NOT NULL UNIQUE,
@@ -551,9 +558,9 @@ class DB:
                     is_active INTEGER NOT NULL DEFAULT 1,
                     expires_on TEXT
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS sales (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     receipt_no TEXT NOT NULL UNIQUE,
@@ -573,9 +580,9 @@ class DB:
                     is_void INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE RESTRICT
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS sale_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     sale_id INTEGER NOT NULL,
@@ -589,9 +596,9 @@ class DB:
                     FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE,
                     FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS returns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -603,9 +610,9 @@ class DB:
                     receipt_text TEXT NOT NULL,
                     FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE RESTRICT
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS return_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     return_id INTEGER NOT NULL,
@@ -616,9 +623,9 @@ class DB:
                     FOREIGN KEY(return_id) REFERENCES returns(id) ON DELETE CASCADE,
                     FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS platform_sales (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -631,9 +638,9 @@ class DB:
                     note TEXT,
                     FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT
                 );
-            """)
+        """)
 
-            cur.execute("""
+        cur.execute("""
                 CREATE TABLE IF NOT EXISTS inventory_adjustments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -645,119 +652,169 @@ class DB:
                     FOREIGN KEY(book_id) REFERENCES books(id) ON DELETE RESTRICT,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
                 );
+        """)
+
+        conn.commit()
+
+        if "refund_tax_cents" not in self._columns(conn, "returns"):
+            cur.execute("ALTER TABLE returns ADD COLUMN refund_tax_cents INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "platform" not in self._columns(conn, "sales"):
+            cur.execute("ALTER TABLE sales ADD COLUMN platform TEXT NOT NULL DEFAULT 'In-store';")
+            conn.commit()
+            cur.execute("UPDATE sales SET platform='In-store' WHERE platform IS NULL OR platform='';")
+            conn.commit()
+
+        if "amount_paid_cents" not in self._columns(conn, "platform_sales"):
+            cur.execute("ALTER TABLE platform_sales ADD COLUMN amount_paid_cents INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "location" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN location TEXT;")
+            conn.commit()
+
+        if "barcode" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN barcode TEXT;")
+            conn.commit()
+
+        if "length_in" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN length_in REAL;")
+            conn.commit()
+
+        if "width_in" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN width_in REAL;")
+            conn.commit()
+
+        if "height_in" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN height_in REAL;")
+            conn.commit()
+
+        if "weight_lb" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN weight_lb REAL;")
+            conn.commit()
+
+        if "weight_oz" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN weight_oz REAL;")
+            conn.commit()
+
+        if "uploaded_facebook" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN uploaded_facebook INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "uploaded_ebay" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN uploaded_ebay INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "must_change_password" not in self._columns(conn, "users"):
+            cur.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "condition" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN condition TEXT NOT NULL DEFAULT 'Good';")
+            conn.commit()
+
+        if "availability_status" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN availability_status TEXT NOT NULL DEFAULT 'available';")
+            conn.commit()
+
+        if "reorder_point" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN reorder_point INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "reorder_qty" not in self._columns(conn, "books"):
+            cur.execute("ALTER TABLE books ADD COLUMN reorder_qty INTEGER NOT NULL DEFAULT 0;")
+            conn.commit()
+
+        if "barcode" in self._columns(conn, "books"):
+            cur.execute("""
+                UPDATE books
+                SET barcode = isbn
+                WHERE barcode IS NULL
+                  AND isbn IS NOT NULL
+                  AND isbn GLOB '[0-9]*'
+                  AND LENGTH(isbn) BETWEEN 8 AND 14;
             """)
-
             conn.commit()
 
-            if "refund_tax_cents" not in self._columns(conn, "returns"):
-                cur.execute("ALTER TABLE returns ADD COLUMN refund_tax_cents INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_book_id ON sale_items(book_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_platform_sales_book_id ON platform_sales(book_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_books_category_id ON books(category_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_book_id ON inventory_adjustments(book_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_created_at ON inventory_adjustments(created_at);")
+        conn.commit()
 
-            if "platform" not in self._columns(conn, "sales"):
-                cur.execute("ALTER TABLE sales ADD COLUMN platform TEXT NOT NULL DEFAULT 'In-store';")
-                conn.commit()
-                cur.execute("UPDATE sales SET platform='In-store' WHERE platform IS NULL OR platform='';")
-                conn.commit()
+        # Seed settings
+        defaults = {
+            "store_name": "My Resale Store",
+            "store_address": "123 Main St",
+            "store_phone": "(000) 000-0000",
+            "receipt_footer": "Thank you! Returns with receipt within 14 days.",
+            "receipt_prefix": "R",
+            "tax_rate_default": "0.00",
+        }
+        for k, v in defaults.items():
+            cur.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?);", (k, v))
 
-            if "amount_paid_cents" not in self._columns(conn, "platform_sales"):
-                cur.execute("ALTER TABLE platform_sales ADD COLUMN amount_paid_cents INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
+        # Seed admin if no users
+        cur.execute("SELECT COUNT(*) FROM users;")
+        if int(cur.fetchone()[0]) == 0:
+            temp_password = secrets.token_urlsafe(12)
+            salt, dg = pbkdf2_hash(temp_password)
+            cur.execute(
+                "INSERT INTO users(username,salt,digest,role,is_active,must_change_password) VALUES(?,?,?,?,1,1);",
+                ("admin", salt, dg, "admin"),
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?);",
+                ("admin_temp_password", temp_password),
+            )
+            cur.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?);",
+                ("admin_temp_password_created_at", now_ts()),
+            )
+        conn.commit()
 
-            if "location" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN location TEXT;")
-                conn.commit()
+        self._ensure_books_fts(conn)
 
-            if "barcode" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN barcode TEXT;")
-                conn.commit()
-
-            if "length_in" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN length_in REAL;")
-                conn.commit()
-
-            if "width_in" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN width_in REAL;")
-                conn.commit()
-
-            if "height_in" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN height_in REAL;")
-                conn.commit()
-
-            if "weight_lb" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN weight_lb REAL;")
-                conn.commit()
-
-            if "weight_oz" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN weight_oz REAL;")
-                conn.commit()
-
-            if "uploaded_facebook" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN uploaded_facebook INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
-
-            if "uploaded_ebay" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN uploaded_ebay INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
-
-            if "condition" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN condition TEXT NOT NULL DEFAULT 'Good';")
-                conn.commit()
-
-            if "availability_status" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN availability_status TEXT NOT NULL DEFAULT 'available';")
-                conn.commit()
-
-            if "reorder_point" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN reorder_point INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
-
-            if "reorder_qty" not in self._columns(conn, "books"):
-                cur.execute("ALTER TABLE books ADD COLUMN reorder_qty INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
-
-            if "barcode" in self._columns(conn, "books"):
-                cur.execute("""
-                    UPDATE books
-                    SET barcode = isbn
-                    WHERE barcode IS NULL
-                      AND isbn IS NOT NULL
-                      AND isbn GLOB '[0-9]*'
-                      AND LENGTH(isbn) BETWEEN 8 AND 14;
-                """)
-                conn.commit()
-
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_sale_items_book_id ON sale_items(book_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_returns_sale_id ON returns(sale_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_platform_sales_book_id ON platform_sales(book_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_books_category_id ON books(category_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_book_id ON inventory_adjustments(book_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_adjustments_created_at ON inventory_adjustments(created_at);")
+    def _ensure_books_fts(self, conn: sqlite3.Connection) -> None:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
+                    title, author, isbn, barcode,
+                    content='books', content_rowid='id'
+                );
+            """)
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS books_ai AFTER INSERT ON books BEGIN
+                    INSERT INTO books_fts(rowid, title, author, isbn, barcode)
+                    VALUES (new.id, new.title, new.author, new.isbn, new.barcode);
+                END;
+            """)
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS books_ad AFTER DELETE ON books BEGIN
+                    INSERT INTO books_fts(books_fts, rowid, title, author, isbn, barcode)
+                    VALUES('delete', old.id, old.title, old.author, old.isbn, old.barcode);
+                END;
+            """)
+            cur.execute("""
+                CREATE TRIGGER IF NOT EXISTS books_au AFTER UPDATE ON books BEGIN
+                    INSERT INTO books_fts(books_fts, rowid, title, author, isbn, barcode)
+                    VALUES('delete', old.id, old.title, old.author, old.isbn, old.barcode);
+                    INSERT INTO books_fts(rowid, title, author, isbn, barcode)
+                    VALUES (new.id, new.title, new.author, new.isbn, new.barcode);
+                END;
+            """)
+            cur.execute("INSERT INTO books_fts(books_fts) VALUES('rebuild');")
             conn.commit()
-
-            # Seed settings
-            defaults = {
-                "store_name": "My Resale Store",
-                "store_address": "123 Main St",
-                "store_phone": "(000) 000-0000",
-                "receipt_footer": "Thank you! Returns with receipt within 14 days.",
-                "receipt_prefix": "R",
-                "tax_rate_default": "0.00",
-            }
-            for k, v in defaults.items():
-                cur.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?);", (k, v))
-
-            # Seed admin if no users
-            cur.execute("SELECT COUNT(*) FROM users;")
-            if int(cur.fetchone()[0]) == 0:
-                salt, dg = pbkdf2_hash("admin")
-                cur.execute(
-                    "INSERT INTO users(username,salt,digest,role,is_active) VALUES(?,?,?,?,1);",
-                    ("admin", salt, dg, "admin"),
-                )
-            conn.commit()
+            self.fts_enabled = True
+        except sqlite3.OperationalError:
+            self.fts_enabled = False
 
     # -------- Settings --------
     def get_setting(self, key: str) -> str:
@@ -776,20 +833,28 @@ class DB:
             )
             conn.commit()
 
+    def delete_setting(self, key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM settings WHERE key=?;", (key,))
+            conn.commit()
+
     # -------- Auth / users --------
     def auth_user(self, username: str, password: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, salt, digest, role, is_active FROM users WHERE username=?;", (username,))
+            cur.execute(
+                "SELECT id, salt, digest, role, is_active, must_change_password FROM users WHERE username=?;",
+                (username,),
+            )
             row = cur.fetchone()
             if not row:
                 return None
-            uid, salt, dg, role, active = row
+            uid, salt, dg, role, active, must_change = row
             if not int(active):
                 return None
             if not pbkdf2_verify(password, salt, dg):
                 return None
-            return {"id": int(uid), "username": username, "role": role}
+            return {"id": int(uid), "username": username, "role": role, "must_change_password": int(must_change)}
 
     def list_users(self) -> List[Tuple[int, str, str, int]]:
         with self._connect() as conn:
@@ -814,7 +879,18 @@ class DB:
     def reset_password(self, user_id: int, new_password: str) -> None:
         salt, dg = pbkdf2_hash(new_password)
         with self._connect() as conn:
-            conn.execute("UPDATE users SET salt=?, digest=? WHERE id=?;", (salt, dg, int(user_id)))
+            conn.execute(
+                "UPDATE users SET salt=?, digest=?, must_change_password=0 WHERE id=?;",
+                (salt, dg, int(user_id)),
+            )
+            conn.commit()
+
+    def set_user_must_change_password(self, user_id: int, must_change: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET must_change_password=? WHERE id=?;",
+                (int(must_change), int(user_id)),
+            )
             conn.commit()
 
     # -------- Categories --------
@@ -882,11 +958,19 @@ class DB:
         s = (search or "").strip()
         where = []
         params: List[Any] = []
+        join_fts = ""
 
         if s:
-            where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.barcode,'') LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
-            like = f"%{s}%"
-            params += [like, like, like, like]
+            if self.fts_enabled:
+                tokens = re.findall(r"[\w]+", s)
+                fts_query = " ".join(f"{t}*" for t in tokens) if tokens else s
+                join_fts = "JOIN books_fts fts ON fts.rowid = b.id"
+                where.append("fts MATCH ?")
+                params.append(fts_query)
+            else:
+                where.append("(b.title LIKE ? OR b.author LIKE ? OR IFNULL(b.barcode,'') LIKE ? OR IFNULL(b.isbn,'') LIKE ?)")
+                like = f"%{s}%"
+                params += [like, like, like, like]
 
         if in_stock_only:
             where.append("b.stock_qty > 0")
@@ -924,6 +1008,7 @@ class DB:
                 b.uploaded_facebook, b.uploaded_ebay, b.availability_status,
                 c.name
             FROM books b
+            {join_fts}
             LEFT JOIN categories c ON c.id = b.category_id
             {wsql}
             ORDER BY b.title;
@@ -2320,6 +2405,22 @@ class DB:
             """)
             return [(a, int(b or 0), int(c or 0)) for (a, b, c) in cur.fetchall()]
 
+    def list_reorder_suggestions(self, limit: int = 200):
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT b.id, b.title, b.stock_qty, b.reorder_point, b.reorder_qty,
+                       IFNULL(cat.name,'(Uncategorized)') AS category
+                FROM books b
+                LEFT JOIN categories cat ON cat.id = b.category_id
+                WHERE b.is_active=1
+                  AND b.reorder_point > 0
+                  AND b.stock_qty <= b.reorder_point
+                ORDER BY (b.reorder_point - b.stock_qty) DESC, b.title
+                LIMIT ?;
+            """, (int(limit),))
+            return [(int(a), b, int(c), int(d), int(e), f) for (a, b, c, d, e, f) in cur.fetchall()]
+
 
 # -------------------------- UI: dialogs --------------------------
 class Dialog:
@@ -2398,6 +2499,15 @@ class App:
         self.root.title("Inventory POS")
         self.root.geometry("1200x720")
 
+        temp_password = self.db.get_setting("admin_temp_password")
+        if temp_password:
+            messagebox.showinfo(
+                "Temporary admin password",
+                "A temporary admin password was generated on first run.\n"
+                f"Username: admin\nPassword: {temp_password}\n\n"
+                "You will be prompted to change it after login.",
+            )
+
         self._login()
 
         self.notebook = ttk.Notebook(self.root)
@@ -2429,10 +2539,34 @@ class App:
             p = data["p"]
             auth = self.db.auth_user(u, p)
             if auth:
+                if auth.get("must_change_password"):
+                    self._force_password_change(auth["id"])
                 self.user = auth
                 self.root.title(f"Inventory POS — {auth['username']} ({auth['role']})")
                 return
             messagebox.showerror("Login failed", "Invalid username/password or inactive user.")
+
+    def _force_password_change(self, user_id: int) -> None:
+        while True:
+            data = Dialog.ask_fields(
+                self.root,
+                "Change Password",
+                [("New password", "p1"), ("Confirm password", "p2")],
+                password_keys={"p1", "p2"},
+            )
+            if data is None:
+                raise SystemExit
+            if not data["p1"]:
+                messagebox.showerror("Invalid password", "Password cannot be empty.")
+                continue
+            if data["p1"] != data["p2"]:
+                messagebox.showerror("Password mismatch", "Passwords do not match.")
+                continue
+            self.db.reset_password(user_id, data["p1"])
+            self.db.delete_setting("admin_temp_password")
+            self.db.delete_setting("admin_temp_password_created_at")
+            messagebox.showinfo("Password updated", "Password updated successfully.")
+            return
 
     def _require_admin(self) -> bool:
         if self.user["role"] != "admin":
@@ -3549,6 +3683,12 @@ class App:
             if missing:
                 messagebox.showerror("Import error", f"Missing columns:\n{', '.join(sorted(missing))}")
                 return
+            conn = self.db._connect()
+            cur = conn.cursor()
+            cur.execute("SELECT id, name FROM categories;")
+            categories = {name: int(cid) for (cid, name) in cur.fetchall()}
+            cur.execute("SELECT id, barcode, stock_qty FROM books WHERE barcode IS NOT NULL;")
+            barcode_map = {barcode: (int(bid), int(stock_qty or 0)) for (bid, barcode, stock_qty) in cur.fetchall()}
 
             for idx, row in enumerate(reader, start=2):
                 try:
@@ -3585,25 +3725,32 @@ class App:
 
                     cat_id = None
                     if cat_name:
-                        try:
-                            self.db.add_category(cat_name)
-                        except sqlite3.IntegrityError:
-                            pass
-                        cats_all = self.db.list_categories(include_inactive=True)
-                        cat_id = next((cid for (cid, nm, _ac) in cats_all if nm == cat_name), None)
+                        cat_id = categories.get(cat_name)
+                        if cat_id is None:
+                            cur.execute("INSERT OR IGNORE INTO categories(name, is_active) VALUES(?,1);", (cat_name,))
+                            cur.execute("SELECT id FROM categories WHERE name=?;", (cat_name,))
+                            row_id = cur.fetchone()
+                            if row_id:
+                                cat_id = int(row_id[0])
+                                categories[cat_name] = cat_id
 
-                    if barcode:
-                        existing = self.db.get_book_by_barcode(barcode)
-                    else:
-                        existing = None
+                    existing = barcode_map.get(barcode) if barcode else None
 
                     if existing:
-                        self.db.update_book(
-                            int(existing[0]),
-                            barcode,
-                            isbn,
-                            title,
-                            author,
+                        book_id, prev_stock = existing
+                        cur.execute("""
+                            UPDATE books
+                            SET barcode=?, isbn=?, title=?, author=?, category_id=?, location=?,
+                                length_in=?, width_in=?, height_in=?, weight_lb=?, weight_oz=?,
+                                condition=?,
+                                price_cents=?, cost_cents=?, stock_qty=?, reorder_point=?, reorder_qty=?, is_active=?,
+                                uploaded_facebook=?, uploaded_ebay=?, availability_status=?
+                            WHERE id=?;
+                        """, (
+                            barcode or None,
+                            isbn or None,
+                            title.strip(),
+                            author.strip(),
                             cat_id,
                             location,
                             length_in,
@@ -3612,24 +3759,44 @@ class App:
                             weight_lb,
                             weight_oz,
                             condition,
-                            price_cents,
-                            cost_cents,
-                            stock_qty,
-                            reorder_point,
-                            reorder_qty,
-                            is_active,
-                            uploaded_facebook,
-                            uploaded_ebay,
+                            int(price_cents),
+                            int(cost_cents),
+                            int(stock_qty),
+                            int(reorder_point),
+                            int(reorder_qty),
+                            int(is_active),
+                            int(uploaded_facebook),
+                            int(uploaded_ebay),
                             availability_status,
-                            self.user["id"],
-                        )
+                            int(book_id),
+                        ))
+                        if int(stock_qty) != int(prev_stock):
+                            delta = int(stock_qty) - int(prev_stock)
+                            self.db._log_inventory_adjustment(
+                                conn,
+                                int(book_id),
+                                delta,
+                                "import",
+                                "CSV import",
+                                self.user["id"],
+                            )
+                            barcode_map[barcode] = (int(book_id), int(stock_qty))
                         updated += 1
                     else:
-                        self.db.add_book(
-                            barcode,
-                            isbn,
-                            title,
-                            author,
+                        cur.execute("""
+                            INSERT INTO books(
+                                barcode, isbn, title, author, category_id, location,
+                                length_in, width_in, height_in, weight_lb, weight_oz,
+                                condition,
+                                price_cents, cost_cents, stock_qty, reorder_point, reorder_qty, is_active,
+                                uploaded_facebook, uploaded_ebay, availability_status
+                            )
+                            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+                        """, (
+                            barcode or None,
+                            isbn or None,
+                            title.strip(),
+                            author.strip(),
                             cat_id,
                             location,
                             length_in,
@@ -3638,19 +3805,22 @@ class App:
                             weight_lb,
                             weight_oz,
                             condition,
-                            price_cents,
-                            cost_cents,
-                            stock_qty,
-                            reorder_point,
-                            reorder_qty,
-                            is_active,
-                            uploaded_facebook,
-                            uploaded_ebay,
+                            int(price_cents),
+                            int(cost_cents),
+                            int(stock_qty),
+                            int(reorder_point),
+                            int(reorder_qty),
+                            int(is_active),
+                            int(uploaded_facebook),
+                            int(uploaded_ebay),
                             availability_status,
-                        )
+                        ))
                         inserted += 1
+                        if barcode:
+                            barcode_map[barcode] = (int(cur.lastrowid), int(stock_qty))
                 except Exception as exc:
                     errors.append(f"Row {idx}: {exc}")
+            conn.commit()
 
         self.refresh_books()
         self.refresh_reports()
@@ -3793,6 +3963,10 @@ class App:
             if missing:
                 messagebox.showerror("Import error", f"Missing columns:\n{', '.join(sorted(missing))}")
                 return
+            conn = self.db._connect()
+            cur = conn.cursor()
+            cur.execute("SELECT id, name, email FROM customers;")
+            customer_map = {(name, email): int(cid) for (cid, name, email) in cur.fetchall()}
 
             for idx, row in enumerate(reader, start=2):
                 try:
@@ -3801,18 +3975,23 @@ class App:
                     is_active = 1 if str(row.get("is_active", "1")).strip() in ("1", "yes", "true", "y") else 0
                     if not name or not email:
                         raise ValueError("name and email are required")
-                    with self.db._connect() as conn:
-                        cur = conn.cursor()
-                        cur.execute("SELECT id FROM customers WHERE name=? AND email=?;", (name, email))
-                        existing = cur.fetchone()
-                    if existing:
-                        self.db.update_customer(int(existing[0]), name, email, is_active)
+                    existing_id = customer_map.get((name, email))
+                    if existing_id:
+                        cur.execute(
+                            "UPDATE customers SET name=?, email=?, is_active=? WHERE id=?;",
+                            (name, email, int(is_active), int(existing_id)),
+                        )
                         updated += 1
                     else:
-                        self.db.add_customer(name, email, is_active)
+                        cur.execute(
+                            "INSERT INTO customers(name, email, is_active) VALUES(?,?,?);",
+                            (name, email, int(is_active)),
+                        )
+                        customer_map[(name, email)] = int(cur.lastrowid)
                         inserted += 1
                 except Exception as exc:
                     errors.append(f"Row {idx}: {exc}")
+            conn.commit()
 
         self.refresh_customers()
         if errors:
@@ -4755,6 +4934,28 @@ class App:
             self.adjustments_tree.column(c, width=w, anchor=a)
         self.adjustments_tree.pack(fill="x", padx=8, pady=8)
 
+        reorder = ttk.LabelFrame(right, text="Reorder suggestions")
+        reorder.pack(fill="both", expand=False, pady=(0, 10))
+        reorder_actions = ttk.Frame(reorder)
+        reorder_actions.pack(fill="x", padx=8, pady=(8, 0))
+        ttk.Button(reorder_actions, text="Export Reorder CSV", command=self.export_reorder_csv).pack(side="right")
+        self.reorder_tree = ttk.Treeview(
+            reorder,
+            columns=("item", "category", "stock", "reorder_point", "reorder_qty"),
+            show="headings",
+            height=6,
+        )
+        for c, l, w, a in [
+            ("item", "Item", 220, "w"),
+            ("category", "Category", 140, "w"),
+            ("stock", "Stock", 60, "center"),
+            ("reorder_point", "Reorder @", 80, "center"),
+            ("reorder_qty", "Reorder Qty", 90, "center"),
+        ]:
+            self.reorder_tree.heading(c, text=l)
+            self.reorder_tree.column(c, width=w, anchor=a)
+        self.reorder_tree.pack(fill="x", padx=8, pady=8)
+
         daily = ttk.LabelFrame(left, text="Daily (last 30 days) — revenue, refunds, net, tax")
         daily.pack(fill="both", expand=True, pady=(0, 10))
         self.daily_tree = ttk.Treeview(daily, columns=("day", "sales", "returns", "rev", "refund", "net", "tax"), show="headings", height=10)
@@ -4876,6 +5077,15 @@ class App:
                     values=(ts, title, f"{delta:+d}", reason, username, note),
                 )
 
+        if hasattr(self, "reorder_tree"):
+            for i in self.reorder_tree.get_children():
+                self.reorder_tree.delete(i)
+            for _bid, title, stock, reorder_point, reorder_qty, category in self.db.list_reorder_suggestions(200):
+                self.reorder_tree.insert(
+                    "", "end",
+                    values=(title, category, stock, reorder_point, reorder_qty),
+                )
+
     def export_sales_csv(self):
         path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], title="Export Sales CSV")
         if not path:
@@ -4929,6 +5139,23 @@ class App:
         refund_tax_col = "refund_tax_cents" if has_refund_tax else "0"
         q = q.format(refund_tax_col=refund_tax_col)
         self.db.export_table_to_csv(q, ["day", "tax_cents", "total_cents"], path)
+        messagebox.showinfo("Exported", f"Saved:\n{path}")
+
+    def export_reorder_csv(self):
+        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")], title="Export Reorder CSV")
+        if not path:
+            return
+        q = """
+            SELECT b.title, IFNULL(cat.name,'(Uncategorized)') AS category,
+                   b.stock_qty, b.reorder_point, b.reorder_qty
+            FROM books b
+            LEFT JOIN categories cat ON cat.id = b.category_id
+            WHERE b.is_active=1
+              AND b.reorder_point > 0
+              AND b.stock_qty <= b.reorder_point
+            ORDER BY (b.reorder_point - b.stock_qty) DESC, b.title;
+        """
+        self.db.export_table_to_csv(q, ["title", "category", "stock_qty", "reorder_point", "reorder_qty"], path)
         messagebox.showinfo("Exported", f"Saved:\n{path}")
 
     # ---------------- Admin tab ----------------
