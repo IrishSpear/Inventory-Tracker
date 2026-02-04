@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% set title = "Customer History" %}
+
+{% block content %}
+  <h2 class="h4 mb-3">{{ customer[1] }}</h2>
+  <p class="text-muted">{{ customer[2] }}</p>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>Receipt</th>
+            <th>Date</th>
+            <th>Total</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for sid, receipt_no, created_at, total_cents, payment_status in history %}
+            <tr>
+              <td>{{ receipt_no }}</td>
+              <td>{{ created_at }}</td>
+              <td>{{ cents_to_money(total_cents) }}</td>
+              <td>{{ payment_status }}</td>
+              <td>
+                <a class="btn btn-sm btn-outline-primary" href="{{ url_for('sale_receipt', sale_id=sid) }}">View</a>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="5" class="text-center text-muted">No sales yet.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% set title = label %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h2 class="h5 mb-3">{{ label }}</h2>
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Category</th>
+            <th>Stock</th>
+            <th>Availability</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td>{{ row.title }}</td>
+              <td>{{ row.category }}</td>
+              <td>{{ row.stock }}</td>
+              <td>{{ row.availability }}</td>
+              <td>
+                <a class="btn btn-sm btn-outline-primary" href="{{ url_for('book_edit', book_id=row.id) }}">Edit</a>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="5" class="text-center text-muted">No items found.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

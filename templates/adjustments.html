@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% set title = "Adjustments" %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h2 class="h5 mb-3">Inventory Adjustments</h2>
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Item</th>
+            <th>Delta</th>
+            <th>Reason</th>
+            <th>Note</th>
+            <th>User</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for created_at, title, delta, reason, note, username in rows %}
+            <tr>
+              <td>{{ created_at }}</td>
+              <td>{{ title }}</td>
+              <td>{{ delta }}</td>
+              <td>{{ reason }}</td>
+              <td>{{ note }}</td>
+              <td>{{ username }}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="6" class="text-center text-muted">No adjustments logged.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

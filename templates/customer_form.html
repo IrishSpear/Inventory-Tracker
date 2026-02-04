@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% set title = "Customer" %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="post">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" value="{{ customer[1] if customer else '' }}" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Email</label>
+            <input class="form-control" name="email" value="{{ customer[2] if customer else '' }}" required>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Active</label>
+            <select class="form-select" name="is_active">
+              <option value="1" {% if not customer or customer[3] %}selected{% endif %}>Yes</option>
+              <option value="0" {% if customer and not customer[3] %}selected{% endif %}>No</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-4 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Save</button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('customers') }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

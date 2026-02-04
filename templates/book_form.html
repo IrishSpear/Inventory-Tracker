@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% set title = title or "Item" %}
+
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="post">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Title</label>
+            <input class="form-control" name="title" value="{{ book[3] if book else '' }}" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Author/Brand</label>
+            <input class="form-control" name="author" value="{{ book[4] if book else '' }}" required>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Barcode</label>
+            <input class="form-control" name="barcode" value="{{ book[1] if book else '' }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">ISBN</label>
+            <input class="form-control" name="isbn" value="{{ book[2] if book else '' }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Category</label>
+            <select class="form-select" name="category_id">
+              <option value="">Uncategorized</option>
+              {% for cid, name, _active in categories %}
+                <option value="{{ cid }}" {% if book and cid == book[5] %}selected{% endif %}>{{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Location</label>
+            <input class="form-control" name="location" value="{{ book[6] if book else '' }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Condition</label>
+            <select class="form-select" name="condition">
+              {% for option in conditions %}
+                <option value="{{ option }}" {% if book and option == book[12] %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Availability</label>
+            <select class="form-select" name="availability_status">
+              {% for option in availability %}
+                <option value="{{ option }}" {% if book and option == book[21] %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Length (in)</label>
+            <input class="form-control" name="length_in" value="{{ book[7] if book else '' }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Width (in)</label>
+            <input class="form-control" name="width_in" value="{{ book[8] if book else '' }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Height (in)</label>
+            <input class="form-control" name="height_in" value="{{ book[9] if book else '' }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Weight (lb)</label>
+            <input class="form-control" name="weight_lb" value="{{ book[10] if book else '' }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Weight (oz)</label>
+            <input class="form-control" name="weight_oz" value="{{ book[11] if book else '' }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Price</label>
+            <input class="form-control" name="price" value="{{ cents_to_money(book[13]) if book else '' }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Cost</label>
+            <input class="form-control" name="cost" value="{{ cents_to_money(book[14]) if book else '' }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Stock Qty</label>
+            <input class="form-control" name="stock_qty" type="number" value="{{ book[15] if book else 0 }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Reorder Point</label>
+            <input class="form-control" name="reorder_point" type="number" value="{{ book[16] if book else 0 }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Reorder Qty</label>
+            <input class="form-control" name="reorder_qty" type="number" value="{{ book[17] if book else 0 }}">
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Active</label>
+            <select class="form-select" name="is_active">
+              <option value="1" {% if not book or book[18] %}selected{% endif %}>Yes</option>
+              <option value="0" {% if book and not book[18] %}selected{% endif %}>No</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">FB Uploaded</label>
+            <select class="form-select" name="uploaded_facebook">
+              <option value="1" {% if book and book[19] %}selected{% endif %}>Yes</option>
+              <option value="0" {% if not book or not book[19] %}selected{% endif %}>No</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">eBay Uploaded</label>
+            <select class="form-select" name="uploaded_ebay">
+              <option value="1" {% if book and book[20] %}selected{% endif %}>Yes</option>
+              <option value="0" {% if not book or not book[20] %}selected{% endif %}>No</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-4 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Save</button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('inventory') }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

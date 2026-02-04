@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% set title = "Receipt" %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="h4 mb-0">Receipt {{ receipt[1] }}</h2>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('sale_txt', sale_id=request.view_args.sale_id) }}">Download TXT</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('sale_pdf', sale_id=request.view_args.sale_id) }}">Download PDF</a>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <pre class="mb-0">{{ receipt[0] }}</pre>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h3 class="h6">Items</h3>
+      <table class="table table-striped">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Qty</th>
+            <th>Unit</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for book_id, title, qty, unit_price, total in items %}
+            <tr>
+              <td>{{ title }}</td>
+              <td>{{ qty }}</td>
+              <td>{{ cents_to_money(unit_price) }}</td>
+              <td>{{ cents_to_money(total) }}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="4" class="text-center text-muted">No items found.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
