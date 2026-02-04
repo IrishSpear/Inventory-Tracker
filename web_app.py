@@ -16,6 +16,7 @@ from flask import (
     flash,
     Response,
     send_file,
+    jsonify,
 )
 
 from app import (
@@ -32,7 +33,9 @@ from app import (
     normalize_locations,
     parse_optional_float,
     parse_optional_int,
+    parse_scan_barcode_and_price,
     export_pdf_text,
+    fetch_title_info_upcitemdb,
 )
 
 
@@ -285,6 +288,7 @@ def book_new():
         "book_form.html",
         title="Add Item",
         book=None,
+        show_scan=True,
         categories=categories,
         conditions=CONDITION_OPTIONS,
         availability=list(AVAILABILITY_STATUSES.values()),
@@ -312,10 +316,40 @@ def book_edit(book_id: int):
         "book_form.html",
         title="Edit Item",
         book=book,
+        show_scan=False,
         categories=categories,
         conditions=CONDITION_OPTIONS,
         availability=list(AVAILABILITY_STATUSES.values()),
         cents_to_money=cents_to_money,
+    )
+
+
+@app.post("/books/scan")
+@login_required
+def book_scan():
+    payload = request.get_json(silent=True) or {}
+    raw = (payload.get("scan") or "").strip()
+    if not raw:
+        return jsonify({"error": "Scan value is required."}), 400
+    barcode, price = parse_scan_barcode_and_price(raw)
+    if not barcode and not price:
+        return jsonify({"error": "Could not parse barcode or price from scan."}), 400
+
+    title = None
+    author = None
+    if barcode:
+        info = fetch_title_info_upcitemdb(barcode)
+        if info:
+            title = info.get("title") or None
+            author = info.get("studio") or None
+
+    return jsonify(
+        {
+            "barcode": barcode,
+            "price": price,
+            "title": title,
+            "author": author,
+        }
     )
 
 
