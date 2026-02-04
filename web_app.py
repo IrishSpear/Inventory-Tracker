@@ -136,8 +136,6 @@ def load_book_form(form: Dict[str, str]) -> Dict[str, Any]:
 
     if not title:
         raise ValueError("Title is required.")
-    if not author:
-        raise ValueError("Author/brand is required.")
     if condition not in CONDITION_OPTIONS:
         raise ValueError("Invalid condition.")
     if weight_oz is not None and weight_oz >= 16:

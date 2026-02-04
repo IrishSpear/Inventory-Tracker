@@ -32,8 +32,8 @@
             <input class="form-control" name="title" value="{{ book[3] if book else '' }}" required id="title_input">
           </div>
           <div class="col-md-6">
-            <label class="form-label">Author/Brand</label>
-            <input class="form-control" name="author" value="{{ book[4] if book else '' }}" required id="author_input">
+            <label class="form-label">Author/Brand (optional)</label>
+            <input class="form-control" name="author" value="{{ book[4] if book else '' }}" id="author_input">
           </div>
           <div class="col-md-3">
             <label class="form-label">Barcode</label>
@@ -211,7 +211,16 @@
           runLookup(scanInput.value.trim());
         }
       });
-      scanInput?.focus();
+      const focusScan = () => {
+        if (!scanInput) {
+          return;
+        }
+        scanInput.focus();
+        scanInput.select();
+      };
+
+      window.addEventListener("pageshow", focusScan);
+      focusScan();
     })();
   </script>
   {% endif %}
