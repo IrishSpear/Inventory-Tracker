@@ -2446,8 +2446,12 @@ class App:
         self.notebook.add(tab, text="Dashboard")
         self.books_tab = tab
 
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)
+
         top = ttk.Frame(tab)
-        top.pack(fill="x", padx=10, pady=10)
+        top.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        top.columnconfigure(0, weight=1)
 
         self.book_search = tk.StringVar()
         self.book_instock = tk.IntVar(value=0)
@@ -2457,58 +2461,80 @@ class App:
         self.book_availability_filter = tk.StringVar(value="Available")
         self.book_uploaded_filter = tk.StringVar(value="Any")
 
-        ttk.Label(top, text="Search:").pack(side="left")
-        e = ttk.Entry(top, textvariable=self.book_search, width=28)
-        e.pack(side="left", padx=(6, 12))
+        filters = ttk.Frame(top)
+        filters.grid(row=0, column=0, sticky="ew")
+        filters.columnconfigure(1, weight=1)
+
+        actions = ttk.Frame(top)
+        actions.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        ttk.Label(filters, text="Search:").grid(row=0, column=0, sticky="w")
+        e = ttk.Entry(filters, textvariable=self.book_search, width=28)
+        e.grid(row=0, column=1, sticky="ew", padx=(6, 12))
         e.bind("<KeyRelease>", lambda _e: self.refresh_books())
 
-        ttk.Checkbutton(top, text="In stock only", variable=self.book_instock, command=self.refresh_books).pack(side="left")
-        ttk.Checkbutton(top, text="Include archived", variable=self.book_inactive, command=self.refresh_books).pack(side="left", padx=10)
-        ttk.Checkbutton(top, text="Low stock only", variable=self.book_low_stock, command=self.refresh_books).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(
+            filters,
+            text="In stock only",
+            variable=self.book_instock,
+            command=self.refresh_books,
+        ).grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(
+            filters,
+            text="Include archived",
+            variable=self.book_inactive,
+            command=self.refresh_books,
+        ).grid(row=0, column=3, sticky="w", padx=(10, 0))
+        ttk.Checkbutton(
+            filters,
+            text="Low stock only",
+            variable=self.book_low_stock,
+            command=self.refresh_books,
+        ).grid(row=0, column=4, sticky="w", padx=(10, 0))
 
-        ttk.Label(top, text="Condition:").pack(side="left", padx=(10, 0))
+        ttk.Label(filters, text="Condition:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         condition_combo = ttk.Combobox(
-            top,
+            filters,
             textvariable=self.book_condition_filter,
             values=["All"] + CONDITION_OPTIONS,
             width=10,
             state="readonly",
         )
-        condition_combo.pack(side="left", padx=(6, 12))
+        condition_combo.grid(row=1, column=1, sticky="w", padx=(6, 12), pady=(6, 0))
         condition_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_books())
 
-        ttk.Label(top, text="Availability:").pack(side="left")
+        ttk.Label(filters, text="Availability:").grid(row=1, column=2, sticky="w", pady=(6, 0))
         availability_combo = ttk.Combobox(
-            top,
+            filters,
             textvariable=self.book_availability_filter,
             values=["Available", "Pending", "Pickup/Ship", "All"],
             width=12,
             state="readonly",
         )
-        availability_combo.pack(side="left", padx=(6, 12))
+        availability_combo.grid(row=1, column=3, sticky="w", padx=(6, 12), pady=(6, 0))
         availability_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_books())
 
-        ttk.Label(top, text="Uploaded to:").pack(side="left")
+        ttk.Label(filters, text="Uploaded to:").grid(row=1, column=4, sticky="w", pady=(6, 0))
         uploaded_combo = ttk.Combobox(
-            top,
+            filters,
             textvariable=self.book_uploaded_filter,
             values=["Any", "Facebook", "eBay"],
             width=10,
             state="readonly",
         )
-        uploaded_combo.pack(side="left", padx=(6, 12))
+        uploaded_combo.grid(row=1, column=5, sticky="w", padx=(6, 12), pady=(6, 0))
         uploaded_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_books())
 
-        ttk.Button(top, text="Add Item (scan supported)", command=self.add_book).pack(side="left", padx=(10, 0))
-        ttk.Button(top, text="Edit", command=self.edit_book).pack(side="left", padx=6)
-        ttk.Button(top, text="Archive/Unarchive", command=self.toggle_book_active).pack(side="left", padx=6)
-        ttk.Button(top, text="Delete", command=self.delete_book).pack(side="left", padx=6)
-        ttk.Button(top, text="Restock", command=self.restock_book).pack(side="left", padx=6)
-        ttk.Button(top, text="Import CSV", command=self.import_books_csv).pack(side="right")
-        ttk.Button(top, text="Export CSV", command=self.export_books_csv).pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="Add Item (scan supported)", command=self.add_book).grid(row=0, column=0, sticky="e")
+        ttk.Button(actions, text="Edit", command=self.edit_book).grid(row=0, column=1, sticky="e", padx=6)
+        ttk.Button(actions, text="Archive/Unarchive", command=self.toggle_book_active).grid(row=0, column=2, sticky="e", padx=6)
+        ttk.Button(actions, text="Delete", command=self.delete_book).grid(row=0, column=3, sticky="e", padx=6)
+        ttk.Button(actions, text="Restock", command=self.restock_book).grid(row=0, column=4, sticky="e", padx=6)
+        ttk.Button(actions, text="Export CSV", command=self.export_books_csv).grid(row=0, column=5, sticky="e", padx=(12, 0))
+        ttk.Button(actions, text="Import CSV", command=self.import_books_csv).grid(row=0, column=6, sticky="e", padx=(6, 0))
 
         customize = ttk.LabelFrame(tab, text="Customize view")
-        customize.pack(fill="x", padx=10, pady=(0, 8))
+        customize.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
 
         self.book_column_vars = {
             "isbn": tk.IntVar(value=1),
@@ -2587,7 +2613,7 @@ class App:
             self.books_tree.heading(col, text=lbl)
             self.books_tree.column(col, width=w, anchor=anchor)
 
-        self.books_tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.books_tree.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
         self.books_tree.bind("<Double-1>", lambda _e: self.edit_book())
         self.books_tree.tag_configure("low_stock", background="#fff3cd")
         self._apply_book_column_visibility()
